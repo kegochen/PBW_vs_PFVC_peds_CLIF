@@ -1,0 +1,1282 @@
+---
+title: "Analysis and Model Quality-Control Report"
+subtitle: "Pediatric CLIF PBW-versus-PFVC Analysis — Script 04"
+date: today
+params:
+  table1_qc_file: null
+  model_qc_file: null
+  site_name: null
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: true
+    embed-resources: true
+  pdf:
+    toc: true
+    number-sections: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+
+library(tidyverse)
+library(knitr)
+
+if (!requireNamespace("kableExtra", quietly = TRUE)) {
+  stop("The kableExtra package is required to format the analysis QC report.")
+}
+
+table1_qc_file <- params$table1_qc_file
+model_qc_file <- params$model_qc_file
+
+options(knitr.kable.NA = "—")
+
+validate_file_parameter <- function(path, parameter_name) {
+  if (
+    !is.character(path) ||
+    length(path) != 1L ||
+    is.na(path) ||
+    !nzchar(trimws(path))
+  ) {
+    stop("The ", parameter_name, " parameter must contain one nonempty character file path.")
+  }
+
+  path <- path.expand(path)
+
+  if (!file.exists(path)) {
+    stop(parameter_name, " file not found: ", path)
+  }
+
+  if (dir.exists(path)) {
+    stop(parameter_name, " identifies a directory rather than a file: ", path)
+  }
+
+  normalizePath(path, winslash = "/", mustWork = TRUE)
+}
+
+table1_qc_file <- validate_file_parameter(
+  path = table1_qc_file,
+  parameter_name = "table1_qc_file"
+)
+
+model_qc_file <- validate_file_parameter(
+  path = model_qc_file,
+  parameter_name = "model_qc_file"
+)
+
+table1_qc <- readRDS(table1_qc_file)
+model_qc <- readRDS(model_qc_file)
+
+if (!is.list(table1_qc)) {
+  stop("The Table 1 QC RDS must contain a list.")
+}
+
+if (!is.list(model_qc)) {
+  stop("The model QC RDS must contain a list.")
+}
+
+get_diagnostic_site <- function(diagnostics, label) {
+  if (!is.list(diagnostics$metadata)) {
+    stop(label, " diagnostic metadata must be a list.")
+  }
+
+  site <- diagnostics$metadata$site
+
+  if (
+    !is.character(site) ||
+    length(site) != 1L ||
+    is.na(site) ||
+    !nzchar(trimws(site))
+  ) {
+    stop(label, " diagnostic metadata must contain one nonempty character site label.")
+  }
+
+  site
+}
+
+table1_site <- get_diagnostic_site(table1_qc, "Table 1")
+model_site <- get_diagnostic_site(model_qc, "Model")
+
+if (!identical(table1_site, model_site)) {
+  stop("Table 1 and model diagnostic site labels disagree: ", table1_site, " versus ", model_site, ".")
+}
+
+report_site <- params$site_name
+
+if (is.null(report_site)) {
+  report_site <- model_site
+} else {
+  if (
+    !is.character(report_site) ||
+    length(report_site) != 1L ||
+    is.na(report_site) ||
+    !nzchar(trimws(report_site))
+  ) {
+    stop("The site_name parameter must be null or one nonempty character site label.")
+  }
+
+  if (!identical(report_site, model_site)) {
+    stop("Report site_name does not match the saved diagnostics: ", report_site, " versus ", model_site, ".")
+  }
+}
+
+required_table1_sections <- c(
+  "metadata", "upstream_input_contract", "required_variables", "pbwpfvc_eligibility",
+  "table1_cohort", "terciles", "respiratory_anchor_provenance", "selected_tidal_volume_cleaning",
+  "categorical_variables", "mortality", "continuous_variables", "checks"
+)
+
+required_model_sections <- c(
+  "metadata", "adjustment_covariates", "exposures", "mortality", "continuous_outcomes",
+  "vfd_competing_risks", "aic_comparison", "survival", "demographic_bias", "pfvc_vs_pbw",
+  "unified_results", "residual_confounding", "conditional_bias", "site_qc_figures", "checks"
+)
+
+missing_table1_sections <- setdiff(required_table1_sections, names(table1_qc))
+missing_model_sections <- setdiff(required_model_sections, names(model_qc))
+
+if (length(missing_table1_sections) > 0L) {
+  stop(
+    "The Table 1 QC RDS is missing required section(s): ",
+    paste(missing_table1_sections, collapse = ", "),
+    ". Rerun Script 04 from the beginning."
+  )
+}
+
+if (length(missing_model_sections) > 0L) {
+  stop(
+    "The model QC RDS is missing required section(s): ",
+    paste(missing_model_sections, collapse = ", "),
+    ". Rerun Script 04 from the beginning."
+  )
+}
+
+find_missing_report_components <- function(required, object, prefix) {
+  missing <- setdiff(required, names(object))
+
+  if (length(missing) == 0L) {
+    return(character())
+  }
+
+  paste0(prefix, missing)
+}
+
+missing_report_components <- c(
+  find_missing_report_components(
+    c("policy", "thresholds", "upstream_retention", "checks"),
+    table1_qc$selected_tidal_volume_cleaning,
+    "selected_tidal_volume_cleaning$"
+  ),
+  find_missing_report_components(
+    c("sample_summary", "method_summary", "logrank_tests", "checks"),
+    model_qc$survival$kaplan_meier,
+    "survival$kaplan_meier$"
+  )
+)
+
+if (length(missing_report_components) > 0L) {
+  stop("The analysis report is missing required diagnostic components: ", paste(missing_report_components, collapse = ", "))
+}
+
+show_table <- function(x, digits = 2, empty_text = "No records to display.", landscape = FALSE,
+                       character_width = "3.2cm") {
+  if (is.null(x)) {
+    return(knitr::asis_output("*Diagnostic not available.*\n\n"))
+  }
+
+  if (!is.data.frame(x)) {
+    x <- as.data.frame(x)
+  }
+
+  if (nrow(x) == 0L) {
+    return(knitr::asis_output(paste0("*", empty_text, "*\n\n")))
+  }
+
+  x <- as_tibble(x)
+
+  long_table <- nrow(x) > 30L
+  wide_table <- ncol(x) > 7L
+
+  table_output <- knitr::kable(
+    x,
+    digits = digits,
+    booktabs = knitr::is_latex_output(),
+    longtable = knitr::is_latex_output() && long_table,
+    escape = TRUE
+  )
+
+  if (knitr::is_html_output()) {
+    table_output <- table_output %>%
+      kableExtra::kable_styling(
+        bootstrap_options = c("striped", "condensed", "responsive"),
+        full_width = FALSE, position = "left", font_size = 10
+      ) %>%
+      kableExtra::scroll_box(width = "100%")
+  }
+
+  if (knitr::is_latex_output()) {
+    latex_options <- if (long_table) {
+      c("repeat_header")
+    } else if (wide_table) {
+      c("hold_position", "scale_down")
+    } else {
+      c("hold_position")
+    }
+
+    table_output <- table_output %>%
+      kableExtra::kable_styling(
+        latex_options = latex_options,
+        font_size = if (wide_table) 7 else 8,
+        position = "left"
+      )
+
+    character_columns <- which(vapply(x, function(column) {
+      is.character(column) || is.factor(column)
+    }, logical(1)))
+
+    for (column_number in character_columns) {
+      table_output <- table_output %>%
+        kableExtra::column_spec(column_number, width = character_width)
+    }
+
+    if (landscape) {
+      table_output <- kableExtra::landscape(table_output)
+    }
+  }
+
+  table_output
+}
+
+show_note <- function(text) {
+  knitr::asis_output(paste0(text, "\n\n"))
+}
+
+validate_report_checks <- function(checks) {
+  if (!is.list(checks) || length(checks) == 0L) {
+    stop("Report integrity checks must be a nonempty list.")
+  }
+
+  check_names <- names(checks)
+
+  if (
+    is.null(check_names) ||
+    anyNA(check_names) ||
+    any(!nzchar(trimws(check_names))) ||
+    anyDuplicated(check_names)
+  ) {
+    stop("Report integrity checks must have unique, nonempty names.")
+  }
+
+  valid_shapes <- vapply(
+    checks,
+    function(value) is.logical(value) && length(value) == 1L,
+    logical(1)
+  )
+
+  if (!all(valid_shapes)) {
+    stop(
+      "Malformed report integrity check(s): ",
+      paste(check_names[!valid_shapes], collapse = ", ")
+    )
+  }
+
+  # Missing logical results are retained as REVIEW, never treated as PASS.
+  vapply(checks, function(value) value[[1]], logical(1))
+}
+
+checks_to_table <- function(checks) {
+  check_values <- validate_report_checks(checks)
+
+  tibble(
+    check = names(check_values),
+    passed = unname(check_values)
+  ) %>%
+    mutate(
+      check = str_replace_all(check, "_", " ") %>%
+        str_to_sentence(),
+      status = if_else(passed %in% TRUE, "PASS", "REVIEW")
+    ) %>%
+    select(check, status)
+}
+
+summarize_checks <- function(checks, area) {
+  check_values <- validate_report_checks(checks)
+
+  tibble(
+    QC_area = area,
+    n_checks = length(check_values),
+    n_passed = sum(check_values %in% TRUE),
+    n_review = sum(!(check_values %in% TRUE)),
+    status = if_else(all(check_values %in% TRUE), "PASS", "REVIEW")
+  )
+}
+
+table1_check_summary <- summarize_checks(table1_qc$checks, "Table 1")
+model_check_summary <- summarize_checks(model_qc$checks, "Models and analysis outputs")
+
+overall_qc_status <- if (
+  table1_check_summary$status == "PASS" &&
+    model_check_summary$status == "PASS"
+) {
+  "PASS"
+} else {
+  "REVIEW"
+}
+```
+
+# Report overview
+
+```{r}
+overview <- tibble(
+  item = c(
+    "Site",
+    "Table 1 QC file",
+    "Model QC file",
+    "Table 1 QC generated",
+    "Model QC last updated",
+    "Overall computational QC status"
+  ),
+  value = c(
+    report_site,
+    table1_qc_file,
+    model_qc_file,
+    as.character(table1_qc$metadata$generated_at),
+    as.character(model_qc$metadata$updated_at),
+    overall_qc_status
+  )
+)
+
+show_table(overview)
+```
+
+```{r}
+#| results: asis
+
+if (overall_qc_status == "PASS") {
+  cat(
+    "**Overall Script 04 computational QC status: PASS.** ",
+    "All retained runtime integrity checks completed successfully."
+  )
+} else {
+  cat(
+    "**Overall Script 04 computational QC status: REVIEW.** ",
+    "At least one retained runtime check requires review."
+  )
+}
+```
+
+## QC check summary
+
+```{r}
+show_table(
+  bind_rows(table1_check_summary, model_check_summary)
+)
+```
+
+# Table 1 quality control
+
+## Table 1 cohort
+
+```{r}
+show_table(table1_qc$table1_cohort)
+```
+
+## Upstream input-contract checks
+
+```{r}
+show_table(table1_qc$upstream_input_contract$summary)
+show_table(table1_qc$upstream_input_contract$checks)
+```
+
+## Respiratory-anchor provenance
+
+Cohort inclusion does not require procedure-code 31500 presence. Respiratory anchors are documented transitions
+from a known state other than invasive to invasive support, or the first documented invasive timestamp in an ICU
+for a hospitalization whose initial known support state is invasive.
+
+The table below classifies each Table 1 patient's selected index timepoint by anchor method and
+hospitalization-level procedure evidence.
+
+```{r}
+show_table(table1_qc$respiratory_anchor_provenance)
+```
+
+## Selected analytic tidal-volume cleaning
+
+Script 01 uses positive tidal volume to establish one-hour eligibility. Script 03 applies source-specific
+thresholds to the originally selected analytic volume. Invalidated values become missing without substituting
+another source, and the completeness gate determines subsequent retention.
+
+### Applied thresholds
+
+```{r}
+show_table(table1_qc$selected_tidal_volume_cleaning$thresholds)
+```
+
+### Retention before subsequent Script 03 gates
+
+These counts describe the upstream cohort entering selected-volume cleaning, not the final Table 1 sample.
+
+```{r}
+show_table(table1_qc$selected_tidal_volume_cleaning$upstream_retention)
+```
+
+### Cleaning integrity checks
+
+```{r}
+show_table(table1_qc$selected_tidal_volume_cleaning$checks)
+```
+
+## PBW/PFVC eligibility
+
+```{r}
+show_table(table1_qc$pbwpfvc_eligibility)
+```
+
+## Tercile counts
+
+```{r}
+show_table(table1_qc$terciles$counts)
+```
+
+## Tercile ranges
+
+```{r}
+show_table(table1_qc$terciles$ranges)
+```
+
+## Ties crossing tercile boundaries
+
+```{r}
+show_table(
+  table1_qc$terciles$tied_values_split_across_terciles,
+  empty_text = "No identical PBW/PFVC values were split across terciles."
+)
+```
+
+## Demographic categories
+
+### Sex
+
+```{r}
+show_table(table1_qc$categorical_variables$sex_counts)
+```
+
+### Race
+
+```{r}
+show_table(table1_qc$categorical_variables$race_counts)
+```
+
+## Sixty-day mortality
+
+```{r}
+show_table(table1_qc$mortality$validation)
+show_table(table1_qc$mortality$counts)
+```
+
+## Continuous-variable missingness
+
+```{r}
+show_table(table1_qc$continuous_variables$missingness_and_finiteness)
+```
+
+## Missingness by PBW/PFVC tercile
+
+```{r}
+show_table(
+  table1_qc$continuous_variables$missingness_by_tercile %>%
+    filter(n_missing > 0L)
+)
+```
+
+## Continuous-variable ranges
+
+```{r}
+show_table(table1_qc$continuous_variables$descriptive_ranges)
+```
+
+## Derived-variable consistency
+
+```{r}
+show_table(table1_qc$continuous_variables$derived_variable_consistency)
+```
+
+## Table 1 integrity checks
+
+```{r}
+show_table(checks_to_table(table1_qc$checks))
+```
+
+# Adjustment covariates and exposure specifications
+
+## Adjustment-covariate availability
+
+```{r}
+adjustment_covariate_report <- model_qc$adjustment_covariates$variable_summary %>%
+  transmute(
+    Variable = variable,
+    Class = class,
+    Total = n_total,
+    Available = n_nonmissing,
+    Missing = n_missing,
+    `Missing (%)` = pct_missing,
+    Unique = n_unique_nonmissing,
+    Infinite = n_infinite,
+    Min = minimum,
+    Max = maximum
+  )
+
+show_table(adjustment_covariate_report, landscape = TRUE)
+```
+
+## Complete-case availability by adjustment set
+
+```{r}
+show_table(model_qc$adjustment_covariates$complete_case_summary)
+```
+
+## Exposure-variable summary
+
+```{r}
+show_table(model_qc$exposures$variable_summary)
+```
+
+## Exposure specifications
+
+```{r}
+exposure_specification_report <- model_qc$exposures$specification_summary %>%
+  transmute(
+    Model = label,
+    Formula = formula,
+    Terms = n_exposure_terms,
+    N = n_complete,
+    Columns = n_model_matrix_columns,
+    Rank = model_matrix_rank,
+    `Full rank` = full_rank
+  )
+
+show_table(exposure_specification_report, landscape = TRUE)
+```
+
+## Pairwise exposure correlations
+
+```{r}
+show_table(model_qc$exposures$pairwise_correlations)
+```
+
+# Sixty-day mortality models
+
+## Outcome summary
+
+```{r}
+show_table(model_qc$mortality$outcome_summary)
+```
+
+## Analysis sample
+
+```{r}
+show_table(model_qc$mortality$analysis_sample$sample_summary)
+show_table(model_qc$mortality$analysis_sample$inclusion_by_outcome)
+```
+
+## Model diagnostics
+
+```{r}
+mortality_model_report <- model_qc$mortality$model_diagnostics %>%
+  transmute(
+    Model = label,
+    N = n_obs,
+    Deaths = n_events,
+    Survivors = n_nonevents,
+    Parameters = n_parameters_excluding_intercept,
+    `Events/parameter` = events_per_parameter,
+    Converged = converged,
+    Boundary = boundary,
+    `Full rank` = full_rank,
+    `Extreme probabilities` = n_extreme_fitted_probabilities,
+    AIC
+  )
+
+show_table(mortality_model_report, landscape = TRUE)
+```
+
+## Events per parameter
+
+```{r}
+show_table(model_qc$mortality$events_per_parameter_below_10)
+```
+
+## Influence summary
+
+```{r}
+mortality_influence_report <- model_qc$mortality$influence_diagnostics$summary %>%
+  transmute(
+    Model = label,
+    N = n_obs,
+    `Cook flags` = n_high_cooks_distance,
+    `Leverage flags` = n_high_leverage,
+    `Large residuals` = n_large_standardized_residual,
+    `DFBETA flags` = n_high_dfbeta,
+    `Any flag` = n_flagged_by_any_measure,
+    `Max Cook` = maximum_cooks_distance,
+    `Max leverage` = maximum_leverage,
+    `Max |residual|` = maximum_absolute_standardized_residual,
+    `Max |DFBETA|` = maximum_absolute_dfbeta
+  )
+
+show_table(mortality_influence_report, digits = 3, landscape = TRUE)
+```
+
+# Continuous-outcome models
+
+## Outcome availability
+
+```{r}
+show_table(model_qc$continuous_outcomes$variable_summary)
+```
+
+## Analysis sample sizes
+
+```{r}
+show_table(model_qc$continuous_outcomes$common_sample_summary)
+```
+
+## Mathematical constraints
+
+```{r}
+show_table(model_qc$continuous_outcomes$mathematical_constraints)
+```
+
+## Driving-pressure provenance
+
+```{r}
+show_table(model_qc$continuous_outcomes$driving_pressure_provenance$source_summary)
+```
+
+The driving-pressure estimate follows the implemented hierarchy: observed plateau pressure minus set PEEP,
+followed by observed or set peak inspiratory pressure (PIP) minus set PEEP.
+Nonpositive candidate values are invalidated upstream.
+
+Plateau-derived values represent static driving-pressure estimates. PIP-derived fallback values are not
+equivalent to plateau-derived static driving pressure. Interpret the mechanics analyses alongside the
+reported source distribution.
+
+## Basic model diagnostics
+
+```{r}
+continuous_basic_report <- model_qc$continuous_outcomes$basic_model_diagnostics %>%
+  transmute(
+    Outcome = outcome_label,
+    Model = exposure_label,
+    N = n_obs,
+    Parameters = n_parameters,
+    `Residual df` = residual_df,
+    `Full rank` = full_rank,
+    Aliased = n_aliased_coefficients,
+    `R²` = r_squared,
+    `Adjusted R²` = adjusted_r_squared,
+    AIC
+  )
+
+show_table(continuous_basic_report, landscape = TRUE)
+```
+
+## Residual-diagnostic summary
+
+```{r}
+continuous_diagnostic_report <- model_qc$continuous_outcomes$diagnostic_summary %>%
+  transmute(
+    Outcome = outcome_label,
+    Models = n_models,
+    Nonnormal = n_nonnormal,
+    Heteroskedastic = n_heteroskedastic,
+    `RESET flags` = n_reset_flagged,
+    `Large residuals` = n_with_large_residuals,
+    Influential = n_with_influential_observations,
+    `High leverage` = n_with_high_leverage
+  )
+
+show_table(continuous_diagnostic_report, landscape = TRUE)
+```
+
+## Influence summary
+
+```{r}
+show_table(model_qc$continuous_outcomes$influence_summary)
+```
+
+## Log-scale elastance and compliance sensitivity
+
+```{r}
+show_table(
+  model_qc$continuous_outcomes$log_sensitivity$raw_vs_log_diagnostic_comparison
+)
+```
+
+# Competing-risk analysis for successful liberation
+
+## VFD outcome summary
+
+```{r}
+show_table(model_qc$vfd_competing_risks$outcome_summary)
+```
+
+## Analysis sample
+
+```{r}
+show_table(model_qc$vfd_competing_risks$analysis_sample)
+show_table(model_qc$vfd_competing_risks$inclusion_by_status)
+```
+
+## Censoring summary
+
+```{r}
+show_table(model_qc$vfd_competing_risks$censoring$full_cohort_summary)
+show_table(model_qc$vfd_competing_risks$censoring$full_cohort_time_distribution)
+show_table(model_qc$vfd_competing_risks$censoring$analysis_sample_summary)
+```
+
+## Fine-Gray model diagnostics
+
+```{r}
+finegray_model_report <- model_qc$vfd_competing_risks$model_diagnostics %>%
+  transmute(
+    Model = exposure_label,
+    Patients = n_patients,
+    `Expanded rows` = n_finegray_rows,
+    Liberations = n_liberation,
+    Deaths = n_death,
+    Censored = n_censored,
+    Coefficients = n_coefficients,
+    Rank = model_matrix_rank,
+    `Full rank` = full_rank,
+    `Robust SE finite` = robust_standard_errors_finite,
+    AIC
+  )
+
+show_table(finegray_model_report, landscape = TRUE)
+```
+
+## Proportional subdistribution-hazards diagnostics
+
+```{r}
+show_table(
+  model_qc$vfd_competing_risks$proportional_subdistribution_hazards$summary
+)
+```
+
+# AIC and evidence-ratio analysis
+
+## AIC comparison inputs
+
+```{r}
+aic_input_report <- model_qc$aic_comparison$input_models %>%
+  transmute(
+    Outcome = outcome,
+    Model = exposure,
+    Patients = n_patients,
+    `Likelihood rows` = n_likelihood_rows,
+    AIC,
+    Likelihood = likelihood_type
+  )
+
+show_table(aic_input_report, landscape = TRUE)
+```
+
+## Outcome-level AIC summary
+
+```{r}
+aic_outcome_report <- model_qc$aic_comparison$outcome_summary %>%
+  transmute(
+    Outcome = outcome,
+    Models = n_models,
+    `Patient-count sets` = n_distinct_patient_counts,
+    `Likelihood-row sets` = n_distinct_likelihood_row_counts,
+    `AIC finite` = all_aic_finite,
+    References = n_reference_models,
+    `Minimum AIC` = minimum_AIC,
+    `Maximum AIC` = maximum_AIC,
+    `AIC range` = AIC_range
+  )
+
+show_table(aic_outcome_report, landscape = TRUE)
+```
+
+## Evidence-ratio QC
+
+```{r}
+show_table(model_qc$aic_comparison$evidence_ratio_qc)
+```
+
+```{r}
+#| results: asis
+
+cat(
+  paste0(
+    "- ", model_qc$aic_comparison$cautions,
+    collapse = "\n"
+  )
+)
+```
+
+# Sixty-day survival analysis
+
+## Survival endpoint
+
+```{r}
+show_table(model_qc$survival$endpoint_summary)
+show_table(model_qc$survival$time_by_status)
+```
+
+## Cox-model analysis sample
+
+```{r}
+show_table(model_qc$survival$cox_analysis_sample$sample_summary)
+show_table(model_qc$survival$cox_analysis_sample$inclusion_by_status)
+```
+
+## Adjusted Cox-model diagnostics
+
+```{r}
+cox_model_report <- model_qc$survival$cox_model_diagnostics %>%
+  transmute(
+    Model = label,
+    N = n_obs,
+    Deaths = n_events,
+    Censored = n_censored,
+    Coefficients = n_coefficients,
+    `Events/coefficient` = events_per_coefficient,
+    Iterations = iterations,
+    Rank = model_matrix_rank,
+    `Full rank` = full_rank,
+    `Max |coefficient|` = maximum_absolute_coefficient,
+    `Max SE` = maximum_standard_error,
+    AIC
+  )
+
+show_table(cox_model_report, landscape = TRUE)
+```
+
+## Proportional-hazards diagnostics
+
+```{r}
+show_table(model_qc$survival$proportional_hazards$summary)
+```
+
+## Race-stratified sensitivity analysis
+
+### Race strata
+
+```{r}
+show_table(model_qc$survival$race_stratified_sensitivity$race_stratum_summary)
+```
+
+### Focal-estimate comparison
+
+```{r}
+cox_sensitivity_report <- model_qc$survival$race_stratified_sensitivity$focal_estimate_comparison %>%
+  transmute(
+    Model = model_label,
+    Term = term,
+    `Primary HR` = primary_hr,
+    `Primary CI low` = primary_conf_low,
+    `Primary CI high` = primary_conf_high,
+    `Primary p` = primary_p_value,
+    `Stratified HR` = stratified_hr,
+    `Stratified CI low` = stratified_conf_low,
+    `Stratified CI high` = stratified_conf_high,
+    `Stratified p` = stratified_p_value,
+    `HR ratio` = ratio_of_hazard_ratios
+  )
+
+show_table(cox_sensitivity_report, digits = 3, landscape = TRUE)
+```
+
+### Proportional-hazards reassessment
+
+```{r}
+show_table(
+  model_qc$survival$race_stratified_sensitivity$proportional_hazards$summary
+)
+```
+
+## Kaplan-Meier analysis
+
+Each weight/PFVC method uses the survival-valid patients with an available finite ratio.
+Terciles are constructed independently for each method, so sample sizes and assignments can differ.
+
+### Analysis samples
+
+```{r}
+show_table(model_qc$survival$kaplan_meier$sample_summary)
+```
+
+### Tercile summaries by weight method
+
+```{r}
+show_table(model_qc$survival$kaplan_meier$method_summary, landscape = TRUE)
+```
+
+### Log-rank tests
+
+```{r}
+show_table(model_qc$survival$kaplan_meier$logrank_tests)
+```
+
+### Integrity checks
+
+```{r}
+show_table(model_qc$survival$kaplan_meier$checks)
+```
+
+# Demographic-bias models
+
+## Input summary
+
+```{r}
+show_table(model_qc$demographic_bias$input_summary)
+```
+
+## Outcome standardization
+
+```{r}
+show_table(model_qc$demographic_bias$standardization)
+```
+
+## Model sample sizes
+
+```{r}
+show_table(model_qc$demographic_bias$sample_summary)
+```
+
+## Sparse-event warning
+
+```{r}
+show_table(model_qc$demographic_bias$sparse_event_warning)
+```
+
+# Predicted FVC versus predicted body weight
+
+PFVC and PBW are predicted quantities derived partly from demographic variables.
+These analyses characterize relationships among prediction formulas rather than
+measured lung function.
+
+## Broad-cohort input summary
+
+```{r}
+show_table(model_qc$pfvc_vs_pbw$input_summary)
+show_table(model_qc$pfvc_vs_pbw$sample_summary)
+```
+
+## Primary-model diagnostics
+
+```{r}
+pfvc_model_report <- model_qc$pfvc_vs_pbw$model_diagnostics %>%
+  transmute(
+    N = n_obs,
+    Parameters = n_parameters,
+    `Residual df` = residual_df,
+    `Residual SE` = residual_standard_error,
+    `R²` = r_squared,
+    `Adjusted R²` = adjusted_r_squared,
+    Skewness = residual_skewness,
+    `Excess kurtosis` = residual_excess_kurtosis,
+    `Shapiro p` = shapiro_p_value,
+    `BP p` = breusch_pagan_p_value,
+    `RESET p` = reset_p_value,
+    `Max |studentized residual|` = maximum_absolute_studentized_residual,
+    `Cook flags` = n_cooks_distance_above_threshold,
+    `Leverage flags` = n_leverage_above_threshold
+  )
+
+show_table(pfvc_model_report, digits = 3, landscape = TRUE)
+show_table(model_qc$pfvc_vs_pbw$diagnostic_flags)
+```
+
+## Nonlinear sensitivity
+
+```{r}
+show_table(
+  model_qc$pfvc_vs_pbw$nonlinear_sensitivity$linear_vs_spline_comparison
+)
+```
+
+## Sex-specific nonlinear sensitivity
+
+```{r}
+show_table(
+  model_qc$pfvc_vs_pbw$sex_specific_nonlinear_sensitivity$model_comparison
+)
+```
+
+# Unified long-format regression artifact
+
+## Final artifact
+
+```{r}
+unified_artifact <- model_qc$unified_results$final_artifact
+
+unified_artifact_summary <- tibble(
+  Item = c(
+    "Rows", "Analyses", "CSV file", "CSV size (KB)",
+    "Parquet file", "Parquet size (KB)"
+  ),
+  Value = c(
+    unified_artifact$row_count,
+    unified_artifact$analysis_count,
+    basename(unified_artifact$csv_path),
+    round(unified_artifact$csv_size_bytes / 1024, 1),
+    basename(unified_artifact$parquet_path),
+    round(unified_artifact$parquet_size_bytes / 1024, 1)
+  )
+)
+
+show_table(unified_artifact_summary)
+```
+
+## Result groups
+
+```{r}
+show_table(unified_artifact$group_summary)
+```
+
+## Duplicate keys
+
+```{r}
+show_table(
+  unified_artifact$duplicate_keys,
+  empty_text = "No duplicate unified-result keys were identified."
+)
+```
+
+# Age functional-form and E-value sensitivity
+
+## Result summary
+
+```{r}
+show_table(model_qc$residual_confounding$result_summary)
+```
+
+```{r}
+#| results: asis
+
+cat(
+  paste0(
+    "- ", model_qc$residual_confounding$cautions,
+    collapse = "\n"
+  )
+)
+```
+
+# Conditional-bias diagnostics
+
+The local `algorithmDiagnostics` package interface and defaults were retained
+unchanged. These figures are descriptive; sparse demographic-percentile cells
+may produce unstable confidence intervals or blank intervals.
+
+## Input variables
+
+```{r}
+show_table(model_qc$conditional_bias$variable_summary)
+```
+
+## Grouping variables
+
+```{r}
+show_table(model_qc$conditional_bias$grouping_summary)
+```
+
+## Plot specifications
+
+```{r}
+show_table(model_qc$conditional_bias$plot_specifications)
+```
+
+## Plot outputs
+
+```{r}
+conditional_bias_output_report <- model_qc$conditional_bias$outputs %>%
+  transmute(
+    Plot = plot_name,
+    File = basename(output_path),
+    Exists = output_exists,
+    `Size (KB)` = round(output_size_bytes / 1024, 1),
+    Nonempty = output_nonempty
+  )
+
+show_table(conditional_bias_output_report)
+```
+
+# Cohort-flow and site-QC figures
+
+## Attrition summary
+
+```{r}
+show_table(model_qc$site_qc_figures$attrition$summary)
+```
+
+## Attrition log
+
+```{r}
+attrition_report <- model_qc$site_qc_figures$attrition$data %>%
+  transmute(
+    Step = step_order,
+    Label = step_label,
+    Remaining = n_remaining,
+    Excluded = n_excluded,
+    Reason = exclusion_reason
+  )
+
+show_table(attrition_report, character_width = "3.8cm")
+```
+
+## PBW/PFVC distribution inputs
+
+```{r}
+show_table(model_qc$site_qc_figures$pbwpfvc_distribution$variable_summary)
+show_table(model_qc$site_qc_figures$pbwpfvc_distribution$grouping_summary)
+```
+
+## Site-QC outputs
+
+```{r}
+site_qc_output_report <- model_qc$site_qc_figures$outputs %>%
+  transmute(
+    Output = output,
+    File = basename(path),
+    Exists = exists,
+    `Size (KB)` = round(size_bytes / 1024, 1),
+    Nonempty = nonempty
+  )
+
+show_table(site_qc_output_report)
+```
+
+# Automated review items
+
+```{r}
+#| results: asis
+
+review_items <- character()
+
+if (
+  !is.null(model_qc$mortality$events_per_parameter_below_10) &&
+    any(model_qc$mortality$events_per_parameter_below_10$below_10)
+) {
+  review_items <- c(
+    review_items,
+    "Primary mortality models have fewer than 10 events per fitted non-intercept parameter."
+  )
+}
+
+if (
+  !is.null(model_qc$survival$events_per_coefficient_below_10) &&
+    any(model_qc$survival$events_per_coefficient_below_10$below_10)
+) {
+  review_items <- c(
+    review_items,
+    "Primary Cox models have fewer than 10 events per fitted coefficient."
+  )
+}
+
+continuous_flags <- model_qc$continuous_outcomes$diagnostic_summary
+
+if (!is.null(continuous_flags) && any(continuous_flags$n_heteroskedastic > 0L)) {
+  review_items <- c(
+    review_items,
+    "Heteroskedasticity was identified in one or more continuous-outcome models; HC3 inference was used."
+  )
+}
+
+if (!is.null(continuous_flags) && any(continuous_flags$n_reset_flagged > 0L)) {
+  review_items <- c(
+    review_items,
+    "RESET diagnostics flagged possible functional-form misspecification in one or more continuous-outcome models."
+  )
+}
+
+if (!is.null(continuous_flags) && any(continuous_flags$n_with_large_residuals > 0L)) {
+  review_items <- c(
+    review_items,
+    "Large externally studentized residuals were identified in one or more continuous-outcome models."
+  )
+}
+
+pfvc_flags <- model_qc$pfvc_vs_pbw$diagnostic_flags
+
+if (!is.null(pfvc_flags) && isTRUE(pfvc_flags$specification_test[[1]])) {
+  review_items <- c(
+    review_items,
+    "The primary PFVC-versus-PBW model was flagged by the RESET specification test."
+  )
+}
+
+if (
+  !is.null(model_qc$conditional_bias$variable_summary) &&
+    any(model_qc$conditional_bias$variable_summary$pct_missing >= 40, na.rm = TRUE)
+) {
+  review_items <- c(
+    review_items,
+    "Respiratory-mechanics conditional-bias plots have substantial source-variable missingness and sparse cells."
+  )
+}
+
+if (length(review_items) == 0L) {
+  cat("No automated analytical review items were identified.")
+} else {
+  cat(paste0("- ", unique(review_items)), sep = "\n")
+}
+```
+
+# Complete runtime-check inventory
+
+## Table 1 checks
+
+```{r}
+show_table(checks_to_table(table1_qc$checks))
+```
+
+## Model and output checks
+
+```{r}
+show_table(checks_to_table(model_qc$checks))
+```
+
+# Reproducibility
+
+```{r}
+reproducibility <- tibble(
+  item = c(
+    "Site",
+    "Table 1 QC file",
+    "Model QC file",
+    "Table 1 QC scope",
+    "Model QC scope",
+    "Table 1 QC generated",
+    "Model QC updated",
+    "Report generated",
+    "R version",
+    "Quarto version"
+  ),
+  value = c(
+    report_site,
+    table1_qc_file,
+    model_qc_file,
+    table1_qc$metadata$qc_scope,
+    model_qc$metadata$qc_scope,
+    as.character(table1_qc$metadata$generated_at),
+    as.character(model_qc$metadata$updated_at),
+    as.character(Sys.time()),
+    R.version.string,
+    as.character(quarto::quarto_version())
+  )
+)
+
+show_table(reproducibility)
+```

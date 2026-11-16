@@ -1,3 +1,17 @@
+# Runtime outputs and active site configuration
 /output/
 /config/config.json
+
+# R session history, saved workspaces, and local RStudio state
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# Local renv libraries, staging files, and cache
+/renv/library/
+/renv/staging/
+/renv/cache/
+
+# Retained exclusion for unused scaffold dependency tooling
 /.uvr/library/
