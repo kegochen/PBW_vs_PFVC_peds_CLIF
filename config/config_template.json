@@ -1,0 +1,12 @@
+{
+  "_comment": "To use a standard supplemental height file, replace supplemental_height: null with the object shown in _supplemental_height_example. Required CSV columns: encounter_id, patient_id, height_cm, height_dttm.",
+  "_supplemental_height_example": {
+    "format": "height_csv",
+    "path": "/path/to/height.csv"
+  },
+  "site_name": "YOUR_SITE",
+  "tables_path": "/path/to/clif_tables",
+  "file_type": "parquet",
+  "output_root": "output",
+  "supplemental_height": null
+}

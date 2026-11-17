@@ -1,0 +1,50 @@
+Package: PBWvsPFVCpedsCLIF
+Type: Project
+Title: Pediatric CLIF Predicted Body Weight Versus Predicted Forced Vital Capacity
+Version: 0.0.1
+Description: Shared R analysis and diagnostic reporting workflow for a
+    retrospective pediatric CLIF study comparing predicted body weight and
+    predicted forced vital capacity normalization of ventilation and
+    respiratory physiology measures. This file declares direct dependencies
+    for explicit renv snapshots; it does not define an installable R package.
+Encoding: UTF-8
+Imports:
+    algorithmDiagnostics,
+    arrow,
+    broom,
+    callr,
+    data.table,
+    dplyr,
+    EValue,
+    fst,
+    ggplot2,
+    grid,
+    gt,
+    gtsummary,
+    here,
+    jsonlite,
+    kableExtra,
+    knitr,
+    lmtest,
+    lubridate,
+    parameters,
+    patchwork,
+    purrr,
+    quarto,
+    renv,
+    rlang,
+    rspiro,
+    sandwich,
+    scales,
+    splines,
+    stats,
+    stringr,
+    survival,
+    survminer,
+    tibble,
+    tidyr,
+    tidyverse,
+    vctrs
+Remotes:
+    AartikSarma/algorithm_diagnostics@1cd593b613fd0aa68c937eedad97767ee1ea6f11
+    

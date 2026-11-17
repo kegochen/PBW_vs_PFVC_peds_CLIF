@@ -1,0 +1,1231 @@
+---
+title: "Normalization Analysis Quality-Control Report"
+subtitle: "Pediatric CLIF PBW-versus-PFVC Analysis — Script 05"
+date: today
+params:
+  diagnostic_file: null
+  site_name: null
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: true
+    embed-resources: true
+  pdf:
+    toc: true
+    number-sections: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+
+library(tidyverse)
+library(knitr)
+
+if (!requireNamespace("kableExtra", quietly = TRUE)) {
+  stop("The kableExtra package is required to format the Script 05 QC report.")
+}
+
+diagnostic_file <- params$diagnostic_file
+
+options(knitr.kable.NA = "—")
+
+validate_file_parameter <- function(path, parameter_name) {
+  if (
+    !is.character(path) ||
+    length(path) != 1L ||
+    is.na(path) ||
+    !nzchar(trimws(path))
+  ) {
+    stop("The ", parameter_name, " parameter must contain one nonempty character file path.")
+  }
+
+  path <- path.expand(path)
+
+  if (!file.exists(path)) {
+    stop(parameter_name, " file not found: ", path)
+  }
+
+  if (dir.exists(path)) {
+    stop(parameter_name, " identifies a directory rather than a file: ", path)
+  }
+
+  normalizePath(path, winslash = "/", mustWork = TRUE)
+}
+
+diagnostic_file <- validate_file_parameter(
+  path = diagnostic_file,
+  parameter_name = "diagnostic_file"
+)
+
+normalization_qc <- readRDS(diagnostic_file)
+
+if (!is.list(normalization_qc)) {
+  stop("The Script 05 diagnostic RDS must contain a list.")
+}
+
+required_sections <- c(
+  "metadata", "input", "derivations", "driving_pressure", "analysis_frames", "discordance",
+  "reclassification", "prognostic_utility", "mechanic_modification", "encompassing_analysis",
+  "normalization_specifications", "expansion_validation", "nonreport_output_manifest",
+  "descriptive_weight_comparison", "warnings", "checks"
+)
+
+missing_sections <- setdiff(required_sections, names(normalization_qc))
+
+if (length(missing_sections) > 0L) {
+  stop(
+    "The Script 05 diagnostic RDS is missing required section(s): ",
+    paste(missing_sections, collapse = ", "),
+    ". Rerun Script 05 through the encompassing analysis before rendering this report."
+  )
+}
+
+show_table <- function(x, digits = 2, empty_text = "No records to display.", landscape = FALSE,
+                       character_width = "3.2cm") {
+  if (is.null(x)) {
+    return(knitr::asis_output("*Diagnostic not available.*\n\n"))
+  }
+
+  if (!is.data.frame(x)) {
+    x <- as.data.frame(x)
+  }
+
+  if (nrow(x) == 0L) {
+    return(knitr::asis_output(paste0("*", empty_text, "*\n\n")))
+  }
+
+  x <- as_tibble(x)
+
+if (knitr::is_latex_output()) {
+  x <- x %>%
+    mutate(across(where(is.character), ~ if_else(.x == "(Intercept)", "Intercept", .x)))
+}
+
+long_table <- nrow(x) > 30L
+wide_table <- ncol(x) > 7L
+
+  table_output <- knitr::kable(
+    x,
+    digits = digits,
+    booktabs = knitr::is_latex_output(),
+    longtable = knitr::is_latex_output() && long_table,
+    escape = TRUE
+  )
+
+  if (knitr::is_html_output()) {
+    table_output <- table_output %>%
+      kableExtra::kable_styling(
+        bootstrap_options = c("striped", "condensed", "responsive"),
+        full_width = FALSE,
+        position = "left",
+        font_size = 10
+      ) %>%
+      kableExtra::scroll_box(width = "100%")
+  }
+
+  if (knitr::is_latex_output()) {
+    latex_options <- if (long_table) {
+      c("repeat_header")
+    } else if (wide_table) {
+      c("hold_position", "scale_down")
+    } else {
+      c("hold_position")
+    }
+
+    table_output <- table_output %>%
+      kableExtra::kable_styling(
+        latex_options = latex_options,
+        font_size = if (wide_table) 7 else 8,
+        position = "left"
+      )
+
+    character_columns <- which(vapply(x, function(column) {
+      is.character(column) || is.factor(column)
+    }, logical(1)))
+
+    for (column_number in character_columns) {
+      table_output <- table_output %>%
+        kableExtra::column_spec(column_number, width = character_width)
+    }
+
+    if (landscape) {
+      table_output <- kableExtra::landscape(table_output)
+    }
+  }
+
+  table_output
+}
+
+validate_report_checks <- function(checks) {
+  if (!is.list(checks) || length(checks) == 0L) {
+    stop("Report integrity checks must be a nonempty list.")
+  }
+
+  check_names <- names(checks)
+
+  if (
+    is.null(check_names) ||
+    anyNA(check_names) ||
+    any(!nzchar(trimws(check_names))) ||
+    anyDuplicated(check_names)
+  ) {
+    stop("Report integrity checks must have unique, nonempty names.")
+  }
+
+  valid_shapes <- vapply(
+    checks,
+    function(value) is.logical(value) && length(value) == 1L,
+    logical(1)
+  )
+
+  if (!all(valid_shapes)) {
+    stop(
+      "Malformed report integrity check(s): ",
+      paste(check_names[!valid_shapes], collapse = ", ")
+    )
+  }
+
+  # Missing logical results are retained as REVIEW, never treated as PASS.
+  vapply(checks, function(value) value[[1]], logical(1))
+}
+
+checks_to_table <- function(checks) {
+  check_values <- validate_report_checks(checks)
+
+  tibble(
+    check = names(check_values),
+    passed = unname(check_values)
+  ) %>%
+    mutate(
+      check = str_replace_all(check, "_", " ") %>%
+        str_to_sentence(),
+      status = if_else(passed %in% TRUE, "PASS", "REVIEW")
+    ) %>%
+    select(check, status)
+}
+
+summarize_checks <- function(checks, area) {
+  check_values <- validate_report_checks(checks)
+
+  tibble(
+    QC_area = area,
+    n_checks = length(check_values),
+    n_passed = sum(check_values %in% TRUE),
+    n_review = sum(!(check_values %in% TRUE)),
+    status = if_else(all(check_values %in% TRUE), "PASS", "REVIEW")
+  )
+}
+
+safe_rows <- function(x) {
+  if (is.null(x) || !is.data.frame(x)) 0L else nrow(x)
+}
+
+runtime_check_summary <- summarize_checks(normalization_qc$checks, "Script 05 runtime and output checks")
+
+overall_computational_status <- if (runtime_check_summary$status == "PASS") {
+  "PASS"
+} else {
+  "REVIEW"
+}
+
+warning_count <- if (is.null(normalization_qc$warnings)) {
+  0L
+} else {
+  sum(purrr::map_int(normalization_qc$warnings, safe_rows))
+}
+
+if (!is.list(normalization_qc$metadata)) {
+  stop("Normalization diagnostic metadata must be a list.")
+}
+
+saved_site <- normalization_qc$metadata$site
+
+if (
+  !is.character(saved_site) ||
+  length(saved_site) != 1L ||
+  is.na(saved_site) ||
+  !nzchar(trimws(saved_site))
+) {
+  stop("Normalization diagnostic metadata must contain one nonempty character site label.")
+}
+
+report_site <- params$site_name
+
+if (is.null(report_site)) {
+  report_site <- saved_site
+} else {
+  if (
+    !is.character(report_site) ||
+    length(report_site) != 1L ||
+    is.na(report_site) ||
+    !nzchar(trimws(report_site))
+  ) {
+    stop("The site_name parameter must be null or one nonempty character site label.")
+  }
+
+  if (!identical(report_site, saved_site)) {
+    stop(
+      "Report site_name does not match the saved normalization diagnostics: ",
+      report_site,
+      " versus ",
+      saved_site,
+      "."
+    )
+  }
+}
+```
+
+# Report overview
+
+```{r}
+overview <- tibble(
+  item = c(
+    "Site",
+    "Diagnostic RDS",
+    "Source analysis file",
+    "Outcome",
+    "Diagnostic RDS generated",
+    "Diagnostic RDS last updated",
+    "Computational QC status",
+    "Recorded interpretation-warning rows"
+  ),
+  value = c(
+    report_site,
+    diagnostic_file,
+    normalization_qc$metadata$source_file,
+    normalization_qc$metadata$outcome,
+    as.character(normalization_qc$metadata$generated_at),
+    as.character(normalization_qc$metadata$updated_at),
+    overall_computational_status,
+    warning_count
+  )
+)
+
+show_table(overview)
+```
+
+```{r}
+#| results: asis
+
+if (overall_computational_status == "PASS") {
+  cat(
+    "**Computational QC status of the saved report-input artifact: PASS.** ",
+    "All runtime integrity and output checks recorded in this artifact passed. ",
+    "These checks cover analysis artifacts and diagnostics, not completion of the reporting workflow. ",
+    "The separate reporting workflow must validate the diagnostic PDF and report-inclusive manifest.\n\n",
+    sep = ""
+  )
+} else {
+  cat(
+    "**Computational QC status of the saved report-input artifact: REVIEW.** ",
+    "At least one recorded runtime or output check requires review. ",
+    "This status describes the saved artifact used to render this report.\n\n",
+    sep = ""
+  )
+}
+
+cat(
+  "**Interpretive status:** Results must be reviewed with the sparse-event, model-stability, ",
+  "driving-pressure provenance, and collinearity warnings summarized below.\n\n",
+  sep = ""
+)
+```
+
+## QC check summary
+
+```{r}
+show_table(runtime_check_summary)
+```
+
+# Automated analytical review items
+
+```{r}
+#| results: asis
+
+review_items <- character()
+
+initial_warnings <- normalization_qc$warnings$initial
+
+if (!is.null(initial_warnings) && nrow(initial_warnings) > 0L) {
+  review_items <- c(review_items, initial_warnings$interpretation)
+}
+
+if (
+  !is.null(normalization_qc$discordance$age_pattern$linear_summary) &&
+    any(normalization_qc$discordance$age_pattern$linear_summary$nonlinearity_p < 0.05, na.rm = TRUE)
+) {
+  review_items <- c(
+    review_items,
+    "The PBW/PFVC relationship with age was nonlinear; the annual log-linear estimate is an average summary."
+  )
+}
+
+spline_heterogeneity <- normalization_qc$discordance$age_pattern$heterogeneity$spline_nested_model_comparison
+
+if (
+  !is.null(spline_heterogeneity) &&
+    "Pr(>F)" %in% names(spline_heterogeneity) &&
+    any(spline_heterogeneity$`Pr(>F)` < 0.05, na.rm = TRUE)
+) {
+  review_items <- c(
+    review_items,
+    "The nonlinear PBW/PFVC age pattern differed jointly by sex or race in the spline interaction analysis."
+  )
+}
+
+prognostic_family_status <- normalization_qc$prognostic_utility$family_status
+
+if (!is.null(prognostic_family_status)) {
+  if (any(str_detect(prognostic_family_status$family_comparison_status, fixed("Exploratory")), na.rm = TRUE)) {
+    review_items <- c(
+      review_items,
+      paste0(
+        "At least one mechanic-family/alternative/adjustment comparison set was computationally usable ",
+        "but flagged as event-limited. Its results remain exploratory."
+      )
+    )
+  }
+
+  if (any(str_detect(prognostic_family_status$family_comparison_status, fixed("Suppressed")), na.rm = TRUE)) {
+    review_items <- c(
+      review_items,
+      paste0(
+        "At least one mechanic-family/alternative/adjustment comparison set failed the existing computational-use ",
+        "criteria. AIC, AUC, and delta AIC were suppressed for that five-model set. ",
+        "Mechanic-coefficient exports use individual model status and may remain available for other models in the set."
+      )
+    )
+  }
+}
+
+encompassing_warnings <- normalization_qc$warnings$encompassing_collinearity
+
+if (!is.null(encompassing_warnings) && nrow(encompassing_warnings) > 0L) {
+  review_items <- c(
+    review_items,
+    paste0(
+      "At least one both-size encompassing model had a high maximum design-column VIF. ",
+      "This flags related model predictors but does not identify PBW and PFVC as the sole source of collinearity. ",
+      "Individual size coefficients require cautious interpretation; no model or observation was removed by this flag."
+    )
+  )
+}
+
+modifier_status <- normalization_qc$mechanic_modification$single_modifier_curves$status
+
+if (!is.null(modifier_status) && any(!modifier_status$estimable)) {
+  review_items <- c(
+    review_items,
+    paste0(
+      sum(!modifier_status$estimable), " of ", nrow(modifier_status),
+      " single-modifier curve panels were suppressed by the prespecified display criteria."
+    )
+  )
+}
+
+if (length(review_items) == 0L) {
+  cat("No automated analytical review items were identified.")
+} else {
+  cat(paste0("- ", unique(review_items)), sep = "\n")
+}
+```
+
+# Input data and analysis frames
+
+## Input-variable availability
+
+```{r}
+input_report <- normalization_qc$input$variable_summary %>%
+  transmute(
+    Variable = variable,
+    Class = class,
+    Total = n_total,
+    Available = n_nonmissing,
+    Missing = n_missing,
+    `Missing (%)` = percent_missing,
+    Unique = n_unique_nonmissing,
+    Infinite = n_infinite,
+    Min = minimum,
+    Max = maximum
+  )
+
+show_table(input_report, landscape = TRUE)
+```
+
+## Upstream derivation validation
+
+```{r}
+derivation_report <- normalization_qc$derivations %>%
+  transmute(
+    Derivation = derivation,
+    Expected = n_expected,
+    Observed = n_observed,
+    Compared = n_compared,
+    `Missing when expected` = n_missing_when_expected,
+    `Observed when not expected` = n_observed_when_not_expected,
+    `Maximum absolute difference` = maximum_absolute_difference,
+    `Maximum relative difference` = maximum_relative_difference,
+    Passed = passed
+  )
+
+show_table(derivation_report, digits = 8, landscape = TRUE)
+```
+
+## Driving-pressure provenance
+
+```{r}
+show_table(normalization_qc$driving_pressure, landscape = TRUE)
+```
+
+The Script 03 driving-pressure hierarchy uses observed plateau pressure minus set
+PEEP when available, followed by observed or set PIP minus set PEEP. The table
+above records the pressure-source distribution at this site. PIP-derived
+fallback estimates are not equivalent to plateau-derived static driving
+pressure; interpret the mechanic results in light of their documented sources.
+
+## Analysis-frame summary
+
+```{r}
+show_table(normalization_qc$analysis_frames$summary)
+```
+
+## Metric-frame exclusions
+
+```{r}
+show_table(normalization_qc$analysis_frames$exclusions)
+```
+
+# PBW/PFVC conversion-factor discordance
+
+PBW/PFVC is a unit-bearing conversion factor in kg/L. Dividing PBW/PFVC by 10
+gives the numerical ratio between VT/PFVC expressed as percent and VT/PBW
+expressed as mL/kg. This scaling does not imply that 10 kg/L is biologically
+normal or ideal.
+
+## Overall distribution
+
+```{r}
+show_table(normalization_qc$discordance$overall_summary, digits = 3)
+```
+
+## Exact metric identities
+
+```{r}
+show_table(normalization_qc$discordance$exact_metric_identities, digits = 10)
+```
+
+## Demographic model diagnostics
+
+```{r}
+show_table(normalization_qc$discordance$demographic_model$diagnostics, landscape = TRUE)
+```
+
+## Demographic model coefficients
+
+```{r}
+discordance_coefficient_report <- normalization_qc$discordance$demographic_model$coefficients %>%
+  transmute(
+    Term = if_else(term == "(Intercept)", "Intercept", term),
+    Estimate = estimate,
+    `Standard error` = std.error,
+    Statistic = statistic,
+    `P value` = p.value,
+    `CI low` = conf.low,
+    `CI high` = conf.high,
+    N = n_obs
+  )
+
+show_table(discordance_coefficient_report, digits = 4, landscape = TRUE)
+```
+
+# Continuous-age pattern of PBW/PFVC
+
+## Average log-linear age summary
+
+```{r}
+show_table(normalization_qc$discordance$age_pattern$linear_summary, digits = 4, landscape = TRUE)
+```
+
+## Linear-versus-spline comparison
+
+```{r}
+show_table(normalization_qc$discordance$age_pattern$linear_vs_spline_comparison, digits = 4)
+```
+
+## Age-model diagnostics
+
+```{r}
+show_table(normalization_qc$discordance$age_pattern$model_diagnostics, landscape = TRUE)
+```
+
+## Demographic heterogeneity
+
+```{r}
+show_table(
+  normalization_qc$discordance$age_pattern$heterogeneity$coefficient_summary,
+  digits = 4,
+  landscape = TRUE
+)
+```
+
+```{r}
+show_table(
+  normalization_qc$discordance$age_pattern$heterogeneity$model_diagnostics,
+  landscape = TRUE
+)
+```
+
+```{r}
+show_table(
+  normalization_qc$discordance$age_pattern$heterogeneity$linear_nested_model_comparison,
+  digits = 4
+)
+
+show_table(
+  normalization_qc$discordance$age_pattern$heterogeneity$spline_nested_model_comparison,
+  digits = 4
+)
+```
+
+The spline interaction comparison evaluates demographic heterogeneity while
+allowing a nonlinear age pattern. Interpret it alongside the saved
+linear-versus-spline comparison from the current analysis sample. The linear
+interaction coefficients describe differences in annual log-linear slopes;
+neither comparison establishes causal demographic effects.
+
+# Tertile reclassification
+
+These tertiles are cohort-relative rank categories created independently within
+the PBW- and PFVC-normalized metrics. They are not validated clinical injury
+thresholds.
+
+## Reclassification by demographic group
+
+```{r}
+show_table(normalization_qc$reclassification$summary)
+```
+
+## Movement between tertiles
+
+```{r}
+show_table(normalization_qc$reclassification$movement_summary)
+```
+
+## Tertile counts
+
+```{r}
+show_table(normalization_qc$reclassification$tertile_counts)
+```
+
+## Ties crossing tertile boundaries
+
+```{r}
+show_table(
+  normalization_qc$reclassification$tied_values_split_across_tertiles,
+  empty_text = "No identical normalized-metric values were split across tertiles."
+)
+```
+
+## Transition matrices
+
+```{r}
+show_table(normalization_qc$reclassification$transition_matrices)
+```
+
+## Reclassification versus continuous age
+
+```{r}
+reclassification_age_model_report <- normalization_qc$reclassification$age_association$model_diagnostics %>%
+  transmute(
+    Metric = metric,
+    N = n_obs,
+    Reclassified = n_reclassified,
+    `Not reclassified` = n_not_reclassified,
+    `Events/parameter` = events_per_parameter,
+    Converged = converged,
+    Boundary = boundary,
+    `Full rank` = full_rank,
+    `Extreme probabilities` = n_extreme_fitted_probabilities
+  )
+
+show_table(reclassification_age_model_report, landscape = TRUE)
+```
+
+```{r}
+show_table(
+  normalization_qc$reclassification$age_association$coefficient_summary,
+  digits = 4,
+  landscape = TRUE
+)
+```
+
+## Reclassification-curve display status
+
+```{r}
+show_table(
+  normalization_qc$reclassification$age_association$curve_display_status,
+  landscape = TRUE
+)
+```
+
+# Descriptive comparison of three weight methods
+
+These comparisons use McLaren predicted body weight, NCHS predicted weight, and
+actual body weight. Actual body weight is measured weight, not a predicted body
+weight method.
+
+Samples are method-specific within the existing descriptive cohort. A missing
+method weight does not exclude that patient from another method. Metric-specific
+samples may also differ, so reclassification percentages must be interpreted
+with their denominators.
+
+```{r}
+descriptive_weight_qc <- normalization_qc$descriptive_weight_comparison
+
+if (
+  !is.list(descriptive_weight_qc) ||
+  !is.list(descriptive_weight_qc$reclassification) ||
+  !is.list(descriptive_weight_qc$age_pattern)
+) {
+  stop("The diagnostic artifact does not contain the complete three-method descriptive comparison.")
+}
+```
+
+## Weight-method definitions
+
+```{r}
+show_table(
+  descriptive_weight_qc$registry %>%
+    select(weight_method, weight_label, weight_variable, ratio_variable)
+)
+```
+
+## Method-specific availability and derivation checks
+
+```{r}
+show_table(descriptive_weight_qc$sample_summary, landscape = TRUE)
+```
+
+## Method-specific tercile reclassification
+
+The weight-normalized and PFVC-normalized metric terciles are constructed
+independently on the same method-specific metric sample, using tie-preserving
+boundaries. These are cohort-relative categories, not clinical injury
+thresholds. Results from different method samples are not necessarily paired
+comparisons.
+
+```{r}
+show_table(
+  descriptive_weight_qc$reclassification$summary,
+  digits = 2,
+  landscape = TRUE
+)
+```
+
+## Preservation of the original McLaren assignments
+
+```{r}
+show_table(descriptive_weight_qc$reclassification$mclaren_reconciliation)
+```
+
+## Sex-specific fitted age curves
+
+Each method uses the same three-degree-of-freedom spline model structure with
+age-by-sex and age-by-race interactions. Curves are shown separately by sex at
+the White race reference category. The exponentiated fitted log-ratio is not
+the arithmetic mean weight/PFVC ratio.
+
+These are descriptive model-based relationships, not causal demographic effects
+or measurements of lung volume. The existing bottom panel of the Part 1b figure
+retains the original McLaren reclassification analysis.
+
+```{r}
+show_table(
+  descriptive_weight_qc$age_pattern$model_diagnostics,
+  landscape = TRUE
+)
+```
+
+## Three-method descriptive checks
+
+```{r}
+show_table(checks_to_table(descriptive_weight_qc$checks))
+
+show_table(checks_to_table(descriptive_weight_qc$reclassification$checks))
+
+show_table(checks_to_table(descriptive_weight_qc$age_pattern$checks))
+```
+
+## Figure layout and review status
+
+The Part 1 PDF is configured as two pages:
+
+- Page 1 top: shared three-method age curves.
+- Page 1 bottom: McLaren reclassification.
+- Page 2 top: NCHS reclassification.
+- Page 2 bottom: actual-body-weight reclassification.
+
+Runtime checks validate the plot objects and output files. They do not establish
+page layout, absence of clipping, or visual readability.
+
+```{r}
+show_table(descriptive_weight_qc$figure$layout)
+```
+
+# Prognostic utility for 60-day mortality
+
+Each outcome analysis is repeated under seven separate alternative adjustment
+specifications. VT/weight and VT/PFVC variables are tidal-volume normalizations;
+weight/PFVC variables are size ratios, not tidal-volume measurements. The
+mechanic definitions and PBW-versus-PFVC locked comparisons remain unchanged.
+
+A common complete-case sample is used within each mechanic family across the
+alternatives and adjustment levels. These model-specific exclusions do not
+change the upstream cohort or descriptive discordance/reclassification samples.
+
+## Alternative adjustment specifications
+
+```{r}
+alternative_registry_report <- normalization_qc$normalization_specifications$registry %>%
+  transmute(
+    ID = normalization_spec,
+    Variable = normalization_variable,
+    Alternative = normalization_label,
+    Type = normalization_kind
+  )
+
+show_table(alternative_registry_report)
+```
+
+## Expanded-analysis inventory
+
+```{r}
+show_table(normalization_qc$expansion_validation$inventory)
+```
+
+## Expanded export-schema validation
+
+```{r}
+show_table(
+  normalization_qc$expansion_validation$export_schema_validation,
+  landscape = TRUE
+)
+```
+
+## Analysis samples
+
+```{r}
+show_table(normalization_qc$prognostic_utility$sample_summary)
+```
+
+## Candidate model specifications
+
+```{r}
+show_table(normalization_qc$prognostic_utility$candidate_specifications)
+```
+
+## Candidate-model diagnostics
+
+```{r}
+prognostic_model_report <- normalization_qc$prognostic_utility$model_diagnostics %>%
+  transmute(
+    Family = family,
+    `Adjustment alternative` = normalization_label,
+    Specification = spec,
+    Adjustment = adjusted,
+    N = n_obs,
+    Deaths = n_events,
+    Parameters = n_parameters_excluding_intercept,
+    `Deaths/parameter` = events_per_parameter,
+    Converged = converged,
+    Boundary = boundary,
+    `Full rank` = full_rank,
+    `Extreme probabilities` = n_extreme_fitted_probabilities,
+    `Computationally usable` = computationally_usable,
+    Status = comparison_status
+  )
+
+show_table(prognostic_model_report, landscape = TRUE, character_width = "3.8cm")
+```
+
+## Family-level comparison status
+
+```{r}
+show_table(normalization_qc$prognostic_utility$family_status, landscape = TRUE)
+```
+
+## Suppression diagnostics
+
+```{r}
+show_table(normalization_qc$prognostic_utility$suppression_diagnostics, landscape = TRUE)
+```
+
+## AIC and C-statistic comparison
+
+Delta AIC is calculated among the five mechanic specifications within each
+mechanic family, alternative adjustment specification, and adjustment level.
+It is not a ranking of the seven alternatives. C-statistics are apparent
+in-sample estimates, not externally validated discrimination.
+
+```{r}
+prognostic_fit_report <- normalization_qc$prognostic_utility$fit_comparison %>%
+  transmute(
+    Family = family,
+    `Adjustment alternative` = normalization_label,
+    Specification = as.character(spec),
+    Adjustment = adjusted,
+    N = n,
+    Deaths = n_events,
+    AIC = aic,
+    `Delta AIC` = delta_aic,
+    `C-statistic` = auc,
+    `Computationally usable` = computationally_usable,
+    Status = comparison_status
+  )
+
+show_table(prognostic_fit_report, digits = 3, landscape = TRUE, character_width = "3.8cm")
+```
+
+## Exposure coefficient export
+
+These coefficients describe the log-transformed mechanic exposure conditional
+on the selected alternative and remaining covariates. The displayed OR per SD
+uses the standard deviation of the log-transformed exposure in the common
+mechanic-family sample. Coefficients for the alternative adjustment variable
+itself are not included in this export.
+
+```{r}
+prognostic_coefficient_report <- normalization_qc$prognostic_utility$coefficient_export$data %>%
+  transmute(
+    Family = family,
+    `Adjustment alternative` = normalization_label,
+    Specification = spec,
+    Adjustment = adjusted,
+    Term = term,
+    `Log-exposure SD` = sd_log,
+    `OR per SD` = or_per_sd,
+    `CI low` = or_per_sd_lo,
+    `CI high` = or_per_sd_hi,
+    `P value` = p_value,
+    N = n,
+    Deaths = n_events,
+    `Computationally usable` = computationally_usable,
+    Status = comparison_status
+  )
+
+show_table(prognostic_coefficient_report, digits = 3, landscape = TRUE, character_width = "3.7cm")
+```
+
+# Form-versus-physiology decomposition
+
+Locked-versus-separate comparisons use nested one-parameter likelihood-ratio
+tests. PBW-versus-PFVC comparisons within a form are nonnested and use AIC
+differences. Positive physiology delta AIC values favor PFVC.
+
+## Results
+
+```{r}
+show_table(
+  normalization_qc$prognostic_utility$form_vs_physiology$results,
+  digits = 4,
+  landscape = TRUE
+)
+```
+
+## Sample and nesting validation
+
+```{r}
+show_table(
+  normalization_qc$prognostic_utility$form_vs_physiology$sample_and_nesting_validation,
+  landscape = TRUE
+)
+```
+
+# Demographic effect modification
+
+A nonsignificant interaction test indicates that effect modification was not
+detected in this analysis. It does not prove demographic invariance or establish
+a universal normalization target.
+
+## Joint interaction tests
+
+```{r}
+show_table(
+  normalization_qc$prognostic_utility$demographic_effect_modification$results,
+  digits = 4,
+  landscape = TRUE
+)
+```
+
+## Model-comparison validation
+
+```{r}
+show_table(
+  normalization_qc$prognostic_utility$demographic_effect_modification$comparison_validation,
+  landscape = TRUE
+)
+```
+
+# Mechanic modification by age and PFVC
+
+## Analysis samples
+
+```{r}
+show_table(normalization_qc$mechanic_modification$sample_summary, landscape = TRUE)
+```
+
+## Centering validation
+
+```{r}
+show_table(normalization_qc$mechanic_modification$centering_validation, digits = 8, landscape = TRUE)
+```
+
+## Interaction-ladder summary
+
+```{r}
+ladder_summary_report <- normalization_qc$mechanic_modification$summary %>%
+  transmute(
+    Family = family,
+    `Adjustment alternative` = normalization_label,
+    Adjustment = adjusted,
+    N = n,
+    Deaths = n_events,
+    `Mechanic × age p` = age_interaction_p,
+    `PFVC adds p` = pfvc_adds_p,
+    `PFVC × age p` = pfvc_x_age_p,
+    `Mechanic × PFVC p` = size_int_joint_p,
+    `Mechanic × PFVC full p` = size_int_full_p,
+    `Maximum VIF` = max_vif_full,
+    `Full model usable` = full_model_computationally_usable,
+    Status = full_model_status
+  )
+
+show_table(ladder_summary_report, digits = 4, landscape = TRUE, character_width = "3.5cm")
+```
+
+## Nested-comparison diagnostics
+
+```{r}
+ladder_comparison_report <- normalization_qc$mechanic_modification$comparison_diagnostics %>%
+  transmute(
+    Family = family,
+    `Adjustment alternative` = normalization_label,
+    Adjustment = adjusted,
+    Test = test_id,
+    Interpretation = interpretation,
+    `Reduced rung` = reduced_rung,
+    `Expanded rung` = expanded_rung,
+    N = n_obs,
+    Deaths = n_events,
+    `DF difference` = df_difference,
+    `Computationally usable` = computationally_usable,
+    `LRT p` = lrt_p_value,
+    Status = comparison_status
+  )
+
+show_table(ladder_comparison_report, digits = 4, landscape = TRUE, character_width = "4cm")
+```
+
+# Balanced single-modifier models
+
+## Interaction tests
+
+```{r}
+single_modifier_report <- normalization_qc$mechanic_modification$single_modifier_models$interaction_results %>%
+  transmute(
+    Family = family,
+    `Adjustment alternative` = normalization_label,
+    Modifier = modifier,
+    N = n_obs,
+    Deaths = n_events,
+    Parameters = n_parameters_excluding_intercept,
+    `Deaths/parameter` = events_per_parameter,
+    `Computationally usable` = computationally_usable,
+    `Interaction estimate` = interaction_estimate,
+    `Interaction SE` = interaction_standard_error,
+    `Wald p` = interaction_wald_p,
+    `LRT p` = interaction_lrt_p,
+    Status = comparison_status
+  )
+
+show_table(single_modifier_report, digits = 4, landscape = TRUE)
+```
+
+## Curve-display status
+
+```{r}
+show_table(
+  normalization_qc$mechanic_modification$single_modifier_curves$status,
+  digits = 3,
+  landscape = TRUE
+)
+```
+
+# Incremental PBW/PFVC information
+
+These one-parameter nested comparisons evaluate PFVC beyond PBW and PBW beyond
+PFVC. Nonsignificance does not establish equivalence or absence of incremental
+information.
+
+## Analysis samples
+
+```{r}
+show_table(normalization_qc$encompassing_analysis$sample_summary)
+```
+
+## Encompassing-model summary
+
+```{r}
+show_table(
+  normalization_qc$encompassing_analysis$summary,
+  digits = 4,
+  landscape = TRUE
+)
+```
+
+## Nested-comparison diagnostics
+
+```{r}
+encompassing_comparison_report <- normalization_qc$encompassing_analysis$comparison_diagnostics %>%
+  transmute(
+    Family = family,
+    `Adjustment alternative` = normalization_label,
+    Adjustment = adjusted,
+    Direction = direction,
+    N = n_obs,
+    Deaths = n_events,
+    `DF difference` = df_difference,
+    `Computationally usable` = computationally_usable,
+    `LRT p` = lrt_p_value,
+    `AIC improvement` = delta_aic_from_adding,
+    Status = comparison_status
+  )
+
+show_table(encompassing_comparison_report, digits = 4, landscape = TRUE)
+```
+
+## Collinearity warnings
+
+```{r}
+show_table(
+  normalization_qc$warnings$encompassing_collinearity,
+  digits = 2,
+  landscape = TRUE
+)
+```
+
+# Validated analysis-output inventory
+
+Script 05 validates 19 analysis artifacts: 14 CSV files and 5 PDF files.
+The two-page Part 1 PDF counts as one file.
+
+The inventory below reflects the saved analysis artifact. Report rendering is a separate workflow.
+A pre-existing diagnostic PDF does not establish reporting completion for the current analysis.
+The separate reporting workflow must validate all 20 deliverables: 14 CSV files and 6 PDF files,
+including this diagnostic report.
+
+```{r}
+#| label: normalization-analysis-output-inventory
+
+if (!is.data.frame(normalization_qc$output_manifest)) {
+  stop("The diagnostic artifact does not contain the finalized analysis-output manifest.")
+}
+
+required_manifest_columns <- c("output", "path", "exists", "nonempty", "size_bytes", "extension")
+missing_manifest_columns <- setdiff(
+  required_manifest_columns,
+  names(normalization_qc$output_manifest)
+)
+
+if (length(missing_manifest_columns) > 0L) {
+  stop(
+    "The analysis-output manifest is missing column(s): ",
+    paste(missing_manifest_columns, collapse = ", ")
+  )
+}
+
+if (!is.list(normalization_qc$reporting)) {
+  stop("The diagnostic artifact does not contain the separate reporting-workflow status.")
+}
+
+section_outputs <- normalization_qc$output_manifest %>%
+  transmute(
+    Output = output,
+    File = basename(path),
+    Exists = exists,
+    Nonempty = nonempty,
+    `Size (KB)` = round(size_bytes / 1024, 1)
+  )
+
+show_table(section_outputs)
+```
+
+## Reporting status recorded in the input artifact
+
+This is the status stored in the diagnostic RDS used to render the report, not a claim about
+the success of the render currently in progress.
+
+```{r}
+#| label: normalization-reporting-input-status
+
+reporting_status_table <- tibble(
+  item = c(
+    "Reporting status in input artifact",
+    "Script 05 rendered the report",
+    "Expected analysis files",
+    "Expected report-inclusive files",
+    "Intended diagnostic PDF"
+  ),
+  value = c(
+    normalization_qc$reporting$status,
+    as.character(normalization_qc$reporting$report_rendered_by_script05),
+    as.character(nrow(normalization_qc$output_manifest)),
+    as.character(normalization_qc$reporting$report_inclusive_expected_file_count),
+    basename(normalization_qc$reporting$intended_output)
+  )
+)
+
+show_table(reporting_status_table)
+```
+
+# Complete runtime-check inventory
+
+```{r}
+show_table(checks_to_table(normalization_qc$checks))
+```
+
+# Reproducibility
+
+```{r}
+reproducibility <- tibble(
+  item = c(
+    "Site",
+    "Diagnostic RDS",
+    "Source analysis file",
+    "Outcome",
+    "Diagnostic RDS generated",
+    "Diagnostic RDS updated",
+    "Report generated",
+    "R version",
+    "Quarto version"
+  ),
+  value = c(
+    report_site,
+    diagnostic_file,
+    normalization_qc$metadata$source_file,
+    normalization_qc$metadata$outcome,
+    as.character(normalization_qc$metadata$generated_at),
+    as.character(normalization_qc$metadata$updated_at),
+    as.character(Sys.time()),
+    R.version.string,
+    as.character(quarto::quarto_version())
+  )
+)
+
+show_table(reproducibility)
+```

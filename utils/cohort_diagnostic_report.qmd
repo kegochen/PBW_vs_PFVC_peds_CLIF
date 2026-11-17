@@ -1,0 +1,2075 @@
+---
+title: "Cohort Identification and Quality-Control Report"
+subtitle: "Pediatric CLIF Cohort — Scripts 01, 02, and 03"
+date: today
+params:
+  diagnostic_file: null
+  site_name: null
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: true
+    embed-resources: true
+  pdf:
+    toc: true
+    number-sections: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+
+library(tidyverse)
+library(knitr)
+
+diagnostic_file <- params$diagnostic_file
+
+if (
+  !is.character(diagnostic_file) ||
+  length(diagnostic_file) != 1L ||
+  is.na(diagnostic_file) ||
+  !nzchar(trimws(diagnostic_file))
+) {
+  stop("The diagnostic_file parameter must contain one nonempty character file path.")
+}
+
+diagnostic_file <- path.expand(diagnostic_file)
+
+if (!file.exists(diagnostic_file)) {
+  stop("Diagnostic RDS file not found: ", diagnostic_file)
+}
+
+if (dir.exists(diagnostic_file)) {
+  stop("The diagnostic_file parameter identifies a directory, not an RDS file: ", diagnostic_file)
+}
+
+diagnostic_file <- normalizePath(
+  diagnostic_file,
+  winslash = "/",
+  mustWork = TRUE
+)
+
+diagnostics <- readRDS(diagnostic_file)
+
+if (!is.list(diagnostics)) {
+  stop("The diagnostic RDS must contain a list.")
+}
+
+required_top_level_sections <- c(
+  "hospitalization_level", "patient_procedure_load_qc", "intubation_identification",
+  "tidal_volume_status_summary", "age_status_summary", "icu_status_summary",
+  "age_eligible_tidal_volume_summary", "cumulative_filter_summary", "linkage_summary", "identifier_qc",
+  "waterfall_retention_summary", "waterfall_process", "height", "weight", "clinical_data",
+  "quality_checks_script02", "quality_checks_script03"
+)
+
+missing_top_level_sections <- setdiff(
+  required_top_level_sections,
+  names(diagnostics)
+)
+
+if (length(missing_top_level_sections) > 0L) {
+  stop(
+    "The diagnostic RDS is missing required section(s): ",
+    paste(missing_top_level_sections, collapse = ", "),
+    ". Rerun Scripts 01, 02, and 03 in order."
+  )
+}
+
+required_intubation_components <- c(
+  "configuration", "processing_scope", "event_level", "identification_summary", "method_summary",
+  "procedure_without_anchor", "initial_respiratory_state", "initially_invasive_anchor_validation",
+  "icu_interval_summary", "transition_source_qc", "respiratory_timestamp_summary",
+  "respiratory_timestamp_conflicts", "respiratory_conflict_patterns", "respiratory_resolution_summary",
+  "integrity_checks", "one_hour_tidal_volume"
+)
+
+
+required_one_hour_components <- c(
+  "configuration", "event_level", "overlap_summary", "overlap_detail", "source_summary",
+  "support_state_join", "output_scope", "checks"
+)
+
+required_height_components <- c(
+  "configuration", "hospitalization_level", "current_analytic_availability", "source_summary",
+  "recovery_summary", "source_agreement", "source_disagreements", "supplemental_linkage",
+  "supplemental_dispersion", "donor_datetime_qc", "donor_growth_plausibility", "checks"
+)
+
+find_missing_nested_components <- function(required_components, diagnostic_object, prefix) {
+  missing_components <- setdiff(required_components, names(diagnostic_object))
+  
+  if (length(missing_components) == 0L) {
+    return(character(0))
+  }
+  
+  paste0(prefix, missing_components)
+}
+
+missing_nested_sections <- c(
+  find_missing_nested_components(
+    required_intubation_components,
+    diagnostics$intubation_identification,
+    "intubation_identification$"
+  ),
+  find_missing_nested_components(
+    required_one_hour_components,
+    diagnostics$intubation_identification$one_hour_tidal_volume,
+    "intubation_identification$one_hour_tidal_volume$"
+  ),
+  find_missing_nested_components(required_height_components, diagnostics$height, "height$")
+)
+
+if (length(missing_nested_sections) > 0L) {
+  stop(
+    "The diagnostic RDS is missing required nested section(s): ",
+    paste(missing_nested_sections, collapse = ", "),
+    ". Rerun Scripts 01, 02, and 03 in order."
+  )
+}
+
+qc02 <- diagnostics$quality_checks_script02
+qc03 <- diagnostics$quality_checks_script03
+
+if (!is.list(qc02) || !is.list(qc03)) {
+  stop("Script 02 and Script 03 diagnostic sections must be lists.")
+}
+
+if (!is.data.frame(qc03$metadata) || nrow(qc03$metadata) != 1L) {
+  stop("Script 03 diagnostic metadata must contain exactly one row.")
+}
+
+required_script03_metadata <- c(
+  "site", "generated_at", "overall_status", "note"
+)
+
+missing_script03_metadata <- setdiff(
+  required_script03_metadata,
+  names(qc03$metadata)
+)
+
+if (length(missing_script03_metadata) > 0L) {
+  stop(
+    "Script 03 diagnostic metadata is missing column(s): ",
+    paste(missing_script03_metadata, collapse = ", ")
+  )
+}
+
+saved_site_name <- qc03$metadata$site[[1]]
+
+if (
+  !is.character(saved_site_name) ||
+  length(saved_site_name) != 1L ||
+  is.na(saved_site_name) ||
+  !nzchar(trimws(saved_site_name))
+) {
+  stop("Script 03 diagnostic metadata must contain one nonempty character site label.")
+}
+
+report_site_name <- params$site_name
+
+if (is.null(report_site_name)) {
+  report_site_name <- saved_site_name
+} else {
+  if (
+    !is.character(report_site_name) ||
+    length(report_site_name) != 1L ||
+    is.na(report_site_name) ||
+    !nzchar(trimws(report_site_name))
+  ) {
+    stop("The site_name parameter must be null or one nonempty character site label.")
+  }
+
+  if (!identical(report_site_name, saved_site_name)) {
+    stop(
+      "Report site_name does not match the saved Script 03 diagnostics: ",
+      report_site_name,
+      " versus ",
+      saved_site_name,
+      "."
+    )
+  }
+}
+
+selected_tv_qc <- qc03$post_intubation_timepoints$selected_tidal_volume_cleaning
+
+if (!is.list(selected_tv_qc)) {
+  stop("Selected analytic tidal-volume cleaning diagnostics are missing. Rerun the updated Script 03.")
+}
+
+required_selected_tv_components <- c("policy", "thresholds", "summary", "hospitalization_level", "retention", "checks")
+missing_selected_tv_components <- setdiff(required_selected_tv_components, names(selected_tv_qc))
+
+if (length(missing_selected_tv_components) > 0L) {
+  stop(
+    "Selected tidal-volume cleaning diagnostics are missing: ",
+    paste(missing_selected_tv_components, collapse = ", ")
+  )
+}
+
+show_table <- function(x, digits = 1, empty_text = "No records to display.") {
+  if (is.null(x)) {
+    return(knitr::asis_output("*Diagnostic not available.*\n\n"))
+  }
+
+  if (!is.data.frame(x)) {
+    x <- as.data.frame(x)
+  }
+
+  if (nrow(x) == 0L) {
+    return(
+      knitr::asis_output(
+        paste0("*", empty_text, "*\n\n")
+      )
+    )
+  }
+
+  knitr::kable(
+    x,
+    digits = digits,
+    booktabs = knitr::is_latex_output(),
+    longtable = knitr::is_latex_output() && nrow(x) > 30L
+  )
+}
+
+show_note <- function(text) {
+  knitr::asis_output(paste0(text, "\n\n"))
+}
+```
+
+# Report overview
+
+```{r}
+overview <- tibble(
+  item = c(
+    "Site",
+    "Diagnostic file",
+    "Diagnostic sections"
+  ),
+  value = c(
+    report_site_name,
+    params$diagnostic_file,
+    paste(names(diagnostics), collapse = ", ")
+  )
+)
+
+show_table(overview)
+```
+
+# Cohort identification
+
+## Cumulative cohort filtering
+
+```{r}
+show_table(
+  diagnostics$cumulative_filter_summary
+)
+```
+
+## Age eligibility
+
+```{r}
+show_table(
+  diagnostics$age_status_summary
+)
+```
+
+## Patient-procedure load and linkage
+
+```{r}
+show_table(diagnostics$patient_procedure_load_qc)
+```
+
+## Intubation processing scope
+
+```{r}
+show_table(diagnostics$intubation_identification$processing_scope)
+```
+
+## Respiratory-anchor definition
+
+Intubation anchors are identified independently of procedure-code 31500 presence.
+
+A qualifying anchor is either:
+
+- A documented transition from a known support state other than invasive to invasive support.
+- For a hospitalization whose first known support state is invasive, the first directly documented invasive timestamp
+  within an ICU interval.
+
+ICU entry is inclusive and exit is exclusive. A missing ICU exit is filled from hospitalization discharge when available.
+Intervals without a usable end are excluded from ICU-anchor matching.
+
+Procedure-code presence is retained as hospitalization-level provenance. Billing timestamps do not anchor the
+one-hour tidal-volume window.
+
+## Intubation identification
+
+```{r}
+show_table(diagnostics$intubation_identification$identification_summary)
+```
+
+## Anchor methods and procedure evidence
+
+A hospitalization can contribute events under more than one method. Method-specific hospitalization counts may overlap.
+
+```{r}
+show_table(diagnostics$intubation_identification$method_summary)
+```
+
+## ICU interval quality
+
+```{r}
+show_table(diagnostics$intubation_identification$icu_interval_summary)
+```
+
+## Invasive-transition documentation source
+
+```{r}
+show_table(diagnostics$intubation_identification$transition_source_qc)
+```
+
+## Respiratory-support timestamp reconciliation
+
+```{r}
+show_table(diagnostics$intubation_identification$respiratory_timestamp_summary)
+```
+
+## Respiratory-support conflict resolution
+
+```{r}
+show_table(diagnostics$intubation_identification$respiratory_resolution_summary, digits = 3)
+```
+
+## Intubation-identification integrity checks
+
+```{r}
+show_table(diagnostics$intubation_identification$integrity_checks)
+```
+
+## One-hour post-intubation tidal-volume eligibility
+
+```{r}
+one_hour_event_summary <- diagnostics$intubation_identification$one_hour_tidal_volume$event_level %>%
+  count(event_tidal_volume_status, name = "n_intubation_events")
+
+show_table(one_hour_event_summary)
+```
+
+## Overlapping intubation-window reconciliation
+
+```{r}
+show_table(diagnostics$intubation_identification$one_hour_tidal_volume$overlap_summary)
+```
+
+## Eligible tidal-volume source
+
+```{r}
+show_table(diagnostics$intubation_identification$one_hour_tidal_volume$source_summary)
+```
+
+## Post-intubation output scope
+
+```{r}
+show_table(diagnostics$intubation_identification$one_hour_tidal_volume$output_scope)
+```
+
+## One-hour tidal-volume integrity checks
+
+```{r}
+show_table(diagnostics$intubation_identification$one_hour_tidal_volume$checks)
+```
+
+## Tidal-volume eligibility
+
+```{r}
+show_table(
+  diagnostics$tidal_volume_status_summary
+)
+```
+
+## Tidal volume among age-eligible hospitalizations
+
+```{r}
+show_table(
+  diagnostics$age_eligible_tidal_volume_summary
+)
+```
+
+## ICU eligibility
+
+```{r}
+show_table(
+  diagnostics$icu_status_summary
+)
+```
+
+## Cross-table linkage
+
+```{r}
+show_table(
+  diagnostics$linkage_summary
+)
+```
+
+# Respiratory-support waterfall
+
+## Cohort retention
+
+```{r}
+show_table(
+  diagnostics$waterfall_retention_summary
+)
+```
+
+## Processing summary
+
+```{r}
+show_table(
+  diagnostics$waterfall_process$process_summary
+)
+```
+
+## Mode inference
+
+```{r}
+show_table(
+  diagnostics$waterfall_process$mode_inference_summary
+)
+```
+
+## Mode missingness by row type
+
+```{r}
+show_table(
+  diagnostics$waterfall_process$mode_missing_summary
+)
+```
+
+## Mode missingness by encounter
+
+```{r}
+mode_missing_encounter_report <-
+  diagnostics$waterfall_process$
+    mode_missing_encounter_summary
+
+if (!is.null(mode_missing_encounter_report)) {
+  names(mode_missing_encounter_report) <-
+    names(mode_missing_encounter_report) %>%
+    str_replace_all(
+      c(
+        "hospitalization" = "hosp",
+        "encounter" = "enc",
+        "respiratory_support" = "resp",
+        "mode_name" = "mode",
+        "nonmissing" = "documented",
+        "missingness" = "missing",
+        "percentage" = "pct",
+        "percent" = "pct"
+      )
+    ) %>%
+    str_replace_all("_", " ") %>%
+    str_to_sentence()
+}
+
+show_table(
+  mode_missing_encounter_report
+)
+```
+
+# Height
+
+## Height source provenance
+
+```{r}
+show_table(diagnostics$height$source_summary)
+```
+
+## Height recovery relative to the previous implementation
+
+```{r}
+show_table(diagnostics$height$recovery_summary)
+```
+
+## Agreement between index-hospitalization sources
+
+```{r}
+show_table(diagnostics$height$source_agreement, digits = 2)
+```
+
+## Supplemental-height configuration and linkage
+
+Supplemental heights require linkage to a hospitalization. Rows with conflicting supplied patient identifiers,
+or a supplied patient identifier that disagrees with the hospitalization lookup, are excluded from supplemental
+height aggregation. Patient-only and unlinked measurements are retained in local diagnostics but are not used.
+
+Plausible linked measurements are summarized by the median within each encounter. Index-hospitalization vitals
+remain preferred over supplemental heights. Cross-encounter donor selection continues to use hospitalization
+admission timestamps and the existing age-dependent windows.
+
+Measurement-date values are retained as source text without parsing. Date precision and time-zone interpretation
+remain unresolved; no measurement time is invented, and these values do not determine donor windows.
+
+```{r}
+#| label: supplemental-height-configuration
+
+supplemental_qc <- diagnostics$supplemental_height
+
+if (!is.list(supplemental_qc)) {
+  stop("Supplemental-height diagnostics are missing. Complete the updated Script 01 before rendering.")
+}
+
+required_supplemental_components <- c(
+  "configuration", "row_level", "linkage_summary", "checks"
+)
+
+missing_supplemental_components <- setdiff(
+  required_supplemental_components,
+  names(supplemental_qc)
+)
+
+if (length(missing_supplemental_components) > 0L) {
+  stop(
+    "Supplemental-height diagnostics are missing component(s): ",
+    paste(missing_supplemental_components, collapse = ", ")
+  )
+}
+
+supplemental_configuration <- supplemental_qc$configuration
+
+supplemental_configuration_report <- tibble(
+  item = c(
+    "Source configured",
+    "File available at source-selection check",
+    "Source format",
+    "Reader status",
+    "Within-encounter reducer",
+    "Measurement-date policy",
+    "Donor timing"
+  ),
+  value = c(
+    as.character(supplemental_configuration$configured),
+    as.character(supplemental_configuration$available),
+    coalesce(supplemental_configuration$format, "Not configured"),
+    supplemental_configuration$reader_status,
+    supplemental_configuration$within_encounter_reducer,
+    supplemental_configuration$measurement_date_policy,
+    supplemental_configuration$donor_timing
+  )
+)
+
+show_table(supplemental_configuration_report)
+```
+
+### Linkage and aggregation counts
+
+The counts below can overlap: a source row may have more than one quality issue. Rows included in an encounter
+median are not necessarily used as the final analytic height because vitals take priority and donor selection
+applies additional encounter-level rules.
+
+```{r}
+#| label: supplemental-height-linkage
+
+show_table(supplemental_qc$linkage_summary)
+```
+
+### Supplemental-height integrity checks
+
+```{r}
+#| label: supplemental-height-checks
+
+show_table(supplemental_qc$checks)
+```
+
+Source-row identifiers, patient identifiers, encounter identifiers, and measurement-date values from the supplemental
+reader are not displayed in this section. Their retention in the local diagnostic RDS does not authorize export.
+The aggregate tables shown here also require the project's eventual disclosure review.
+
+## Supplemental-source dispersion
+
+```{r}
+show_table(diagnostics$height$supplemental_dispersion, digits = 2)
+```
+
+## Height integrity checks
+
+```{r}
+show_table(diagnostics$height$checks)
+```
+
+# Weight
+
+## Weight availability and imputation
+
+```{r}
+show_table(
+  diagnostics$weight$availability_summary
+)
+```
+
+## Weight-range checks
+
+```{r}
+show_table(
+  diagnostics$weight$range_summary
+)
+```
+
+```{r}
+#| results: asis
+
+if (!is.null(diagnostics$weight$accepted_bounds_kg)) {
+  cat(
+    "Accepted weight bounds: ",
+    paste(
+      diagnostics$weight$accepted_bounds_kg,
+      collapse = "–"
+    ),
+    " kg.\n\n",
+    sep = ""
+  )
+}
+
+if (!is.null(diagnostics$weight$expected_range_kg)) {
+  cat(
+    "Expected pediatric range used for QC: ",
+    paste(
+      diagnostics$weight$expected_range_kg,
+      collapse = "–"
+    ),
+    " kg.\n",
+    sep = ""
+  )
+}
+```
+
+# Clinical-data availability
+
+## Availability summary
+
+```{r}
+show_table(
+  diagnostics$clinical_data$availability_summary
+)
+```
+
+## Data-quality summary
+
+```{r}
+clinical_quality_report <-
+  diagnostics$clinical_data$quality_summary %>%
+  pivot_longer(
+    everything(),
+    names_to = "Measure",
+    values_to = "N"
+  ) %>%
+  mutate(
+    Measure = recode(
+      Measure,
+      n_index_hospitalizations = "Index hospitalizations",
+      n_without_numeric_spo2 = "Without numeric SpO2",
+      n_with_spo2_but_none_at_or_below_97 =
+        "SpO2 present, but none <=97",
+      n_with_spo2_outside_0_100 =
+        "SpO2 outside 0-100",
+      n_without_valid_map = "Without valid MAP",
+      n_with_nonpositive_map = "With nonpositive MAP",
+      n_without_gcs = "Without GCS",
+      n_without_demographics = "Without demographics",
+      n_missing_discharge_category =
+        "Missing discharge category"
+    )
+  )
+
+show_table(clinical_quality_report)
+```
+
+# Identifier quality and reconciliation
+
+## Hospitalization-ID capitalization
+
+```{r}
+hospitalization_id_report <-
+  diagnostics$identifier_qc$
+    hospitalization_case_summary %>%
+  pivot_longer(
+    everything(),
+    names_to = "Measure",
+    values_to = "N"
+  ) %>%
+  mutate(
+    Measure = recode(
+      Measure,
+      n_source_rows = "Source rows",
+      n_normalized_hospitalization_ids =
+        "Unique normalized hospitalization IDs",
+      n_ids_with_case_variants =
+        "IDs with uppercase/lowercase variants",
+      n_ids_with_core_identity_conflict =
+        "IDs with core identity conflicts"
+    )
+  )
+
+show_table(hospitalization_id_report)
+```
+
+## Hospitalization-row reconciliation
+
+```{r}
+show_table(
+  diagnostics$identifier_qc$
+    hospitalization_reconciliation
+)
+```
+
+## Conflicts in hospitalization analysis variables
+
+```{r}
+hospitalization_conflicts <-
+  diagnostics$identifier_qc$
+    hospitalization_analysis_conflicts
+
+if (
+  is.null(hospitalization_conflicts) ||
+    nrow(hospitalization_conflicts) == 0
+) {
+  cat(
+    "No conflicts were found in hospitalization variables ",
+    "used by this analysis."
+  )
+} else {
+  show_table(
+    hospitalization_conflicts
+  )
+}
+```
+
+## Patient-ID reconciliation summary
+
+```{r}
+show_table(
+  diagnostics$identifier_qc$
+    patient_summary
+)
+```
+
+## Reconciled patient records
+
+```{r}
+patient_reconciliation <-
+  diagnostics$identifier_qc$
+    patient_reconciliation
+
+if (
+  is.null(patient_reconciliation) ||
+    nrow(patient_reconciliation) == 0
+) {
+  cat("No patient records required reconciliation.")
+} else {
+  patient_reconciliation_report <- tibble(
+    Measure = c(
+      "Patients reconciled",
+      "Conflicting death dates",
+      "Missing-versus-populated death date",
+      "Conflicting language",
+      "Conflicting race",
+      "Conflicting birth date"
+    ),
+    N = c(
+      nrow(patient_reconciliation),
+      sum(
+        patient_reconciliation$death_dttm_conflict,
+        na.rm = TRUE
+      ),
+      sum(
+        patient_reconciliation$
+          death_dttm_missingness_difference,
+        na.rm = TRUE
+      ),
+      sum(
+        patient_reconciliation$language_conflict,
+        na.rm = TRUE
+      ),
+      sum(
+        patient_reconciliation$race_conflict,
+        na.rm = TRUE
+      ),
+      sum(
+        patient_reconciliation$birth_date_conflict,
+        na.rm = TRUE
+      )
+    )
+  )
+
+  show_table(patient_reconciliation_report)
+}
+```
+
+# Script 02: Outlier cleaning and quality checks
+
+This section compares hospitalization-level data availability before and after
+outlier cleaning. Complete loss means that an index hospitalization had at
+least one usable value before cleaning and no usable values afterward.
+
+## Index-hospitalization ID checks
+
+```{r}
+show_table(qc02$cohort_id_qc)
+```
+
+## Post-intubation tidal-volume input
+
+```{r}
+show_table(qc02$post_intubation_tidal_volume$input_summary)
+```
+
+```{r}
+show_table(qc02$post_intubation_tidal_volume$checks)
+```
+
+## Combined availability and dropout
+
+```{r}
+combined_dropout_report <-
+  qc02$combined_dropout_summary %>%
+  transmute(
+    Domain = data_domain,
+    Element = str_replace_all(
+      data_element,
+      "_",
+      " "
+    ),
+    `Index N` = n_index_hospitalizations,
+    `Usable before` = n_with_usable_data_before,
+    `Usable after` = n_with_usable_data_after,
+    `Lost all` = n_lost_all_usable_data,
+    `Lost (%)` =
+      percent_lost_among_those_with_data_before
+  )
+
+show_table(
+  combined_dropout_report
+)
+```
+
+## Threshold rules causing complete data loss
+
+```{r}
+complete_loss_report <-
+  qc02$combined_complete_loss_rules
+
+if (
+  is.null(complete_loss_report) ||
+    nrow(complete_loss_report) == 0
+) {
+  cat(
+    "No evaluated threshold caused complete ",
+    "hospitalization-level data loss."
+  )
+} else {
+  complete_loss_report <-
+    complete_loss_report %>%
+    mutate(
+      data_element =
+        str_replace_all(data_element, "_", " ")
+    )
+
+  show_table(
+    complete_loss_report
+  )
+}
+```
+
+# Script 02: Laboratory quality checks
+
+## Availability before and after cleaning
+
+```{r}
+show_table(
+  qc02$labs$dropout_summary
+)
+```
+
+## Rules causing complete vital-sign data loss
+
+```{r}
+vital_loss_rules <- qc02$vitals$dropout_rule_summary
+
+if (
+  is.null(vital_loss_rules) ||
+  nrow(vital_loss_rules) == 0L
+) {
+  show_note(
+    "No vital-sign category lost all usable data because of threshold cleaning."
+  )
+} else {
+  show_table(vital_loss_rules)
+}
+```
+
+## Rules causing complete laboratory-data loss
+
+```{r}
+lab_loss_rules <-
+  qc02$labs$dropout_rule_summary
+
+if (
+  is.null(lab_loss_rules) ||
+    nrow(lab_loss_rules) == 0
+) {
+  cat(
+    "No laboratory category lost all usable data ",
+    "because of threshold cleaning."
+  )
+} else {
+  show_table(
+    lab_loss_rules
+  )
+}
+```
+
+## Laboratory integrity checks
+
+```{r}
+show_table(
+  qc02$labs$integrity_summary
+)
+```
+
+# Script 02: Vital-sign quality checks
+
+## Availability before and after cleaning
+
+```{r}
+show_table(
+  qc02$vitals$dropout_summary
+)
+```
+
+## Exact-row deduplication
+
+```{r}
+show_table(
+  qc02$vitals$deduplication_summary
+)
+```
+
+## Overall duplicate-record summary
+
+```{r}
+show_table(
+  qc02$vitals$duplicate_summary
+)
+```
+
+## Duplicate records by vital category
+
+```{r}
+show_table(
+  qc02$vitals$duplicate_by_category
+)
+```
+
+## Vital-sign integrity checks
+
+```{r}
+show_table(
+  qc02$vitals$integrity_summary
+)
+```
+
+# Script 02: Height quality checks
+
+Script 01 reports height availability and imputation. This section reports the
+effect of applying the selected plausibility threshold in Script 02.
+
+## Availability before and after cleaning
+
+```{r}
+show_table(
+  qc02$heights$dropout_summary
+)
+```
+
+## Threshold causing complete height loss
+
+```{r}
+height_loss_rules <-
+  qc02$heights$dropout_rule_summary
+
+if (
+  is.null(height_loss_rules) ||
+    nrow(height_loss_rules) == 0
+) {
+  cat(
+    "No hospitalization lost all usable height data ",
+    "because of threshold cleaning."
+  )
+} else {
+  show_table(
+    height_loss_rules
+  )
+}
+```
+
+## Selected height threshold
+
+```{r}
+height_decision <-
+  qc02$heights$threshold_decision
+
+height_decision_table <- height_decision %>%
+  transmute(
+    Variable = variable,
+    `Original rule` = original_rule,
+    `Selected rule` = selected_rule,
+    `Evidence status` = literature_status
+  )
+
+show_table(height_decision_table)
+```
+
+```{r}
+#| results: asis
+
+if (
+  !is.null(height_decision) &&
+    nrow(height_decision) > 0
+) {
+  cat(
+    "**Rationale:** ",
+    height_decision$rationale[[1]],
+    "\n",
+    sep = ""
+  )
+}
+```
+
+## Height integrity checks
+
+```{r}
+show_table(
+  qc02$heights$integrity_summary
+)
+```
+
+# Script 02: Respiratory-support quality checks
+
+This section summarizes hospitalization-level availability before and after
+respiratory-support outlier cleaning.
+
+## Availability before and after cleaning
+
+```{r}
+respiratory_dropout_report <-
+  qc02$respiratory_support$
+    dropout_summary %>%
+  transmute(
+    Variable = str_replace_all(
+      variable_name,
+      "_",
+      " "
+    ),
+    `Index N` = n_index_hospitalizations,
+    `Usable before` = n_with_usable_data_before,
+    `Usable after` = n_with_usable_data_after,
+    `Lost all` = n_lost_all_usable_data,
+    `Absent before` = n_without_usable_data_before,
+    `Lost (%)` =
+      percent_lost_among_those_with_data_before
+  )
+
+show_table(respiratory_dropout_report)
+```
+
+## Thresholds causing complete respiratory-data loss
+
+```{r}
+resp_loss_rules <-
+  qc02$respiratory_support$
+    dropout_rule_summary
+
+if (
+  is.null(resp_loss_rules) ||
+    nrow(resp_loss_rules) == 0
+) {
+  cat(
+    "No respiratory-support variable lost all usable data ",
+    "because of threshold cleaning."
+  )
+} else {
+  show_table(
+    resp_loss_rules
+  )
+}
+```
+
+## Values responsible for complete loss
+
+```{r}
+respiratory_loss_value_report <-
+  qc02$respiratory_support$
+    complete_loss_value_summary %>%
+  transmute(
+    Variable = str_replace_all(
+      variable_name,
+      "_",
+      " "
+    ),
+    Rule = threshold_rule_responsible,
+    `Hosp. N` = n_hospitalizations,
+    `Removed N` = n_removed_measurements,
+    Min = minimum_removed_value,
+    Q1 = q1_removed_value,
+    Median = median_removed_value,
+    Q3 = q3_removed_value,
+    Max = maximum_removed_value
+  )
+
+show_table(
+  respiratory_loss_value_report,
+  digits = 2
+)
+```
+
+## Respiratory-support integrity checks
+
+```{r}
+show_table(
+  qc02$respiratory_support$
+    integrity_summary
+)
+```
+
+## Respiratory-threshold decisions
+
+```{r}
+respiratory_decisions <-
+  qc02$respiratory_support$
+    threshold_decisions
+
+respiratory_decision_table <-
+  respiratory_decisions %>%
+  transmute(
+    Variable = str_replace_all(
+      variable_name,
+      "_",
+      " "
+    ),
+    Original = original_bound,
+    Selected = selected_bound,
+    Decision = decision,
+    `Evidence status` = literature_status
+  )
+
+show_table(respiratory_decision_table)
+```
+
+### Rationale for decisions
+
+```{r}
+#| results: asis
+
+if (
+  !is.null(respiratory_decisions) &&
+    nrow(respiratory_decisions) > 0
+) {
+  rationale_lines <- paste0(
+    "- **",
+    str_replace_all(
+      respiratory_decisions$variable_name,
+      "_",
+      " "
+    ),
+    ":** ",
+    respiratory_decisions$rationale
+  )
+
+  cat(
+    paste(
+      rationale_lines,
+      collapse = "\n"
+    )
+  )
+}
+```
+
+The respiratory thresholds above are currently implemented as
+analysis-specific overrides. Final approved thresholds should be moved into the
+respiratory-support threshold CSV after literature and ETL review.
+
+## Set tidal-volume unit investigation
+
+Values below 25 in `tidal_volume_set` remain excluded because they may mix
+absolute tidal volume in mL with weight-normalized tidal volume in mL/kg.
+
+```{r}
+show_table(
+  qc02$respiratory_support$
+    tidal_volume_complete_loss$
+    summary,
+  digits = 2
+)
+```
+
+## Hospitalizations losing all set tidal-volume data
+
+The table below omits hospitalization identifiers from the rendered report.
+
+```{r}
+tidal_volume_loss_report <-
+  qc02$respiratory_support$
+    tidal_volume_complete_loss$
+    hospitalization_level
+
+if (
+  is.null(tidal_volume_loss_report) ||
+    nrow(tidal_volume_loss_report) == 0
+) {
+  cat(
+    "No hospitalization lost all usable set tidal-volume data."
+  )
+} else {
+  tidal_volume_loss_report <-
+    tidal_volume_loss_report %>%
+    transmute(
+      `Weight (kg)` = weight_kg,
+      `Real rows` = n_real_rows,
+      `Set TV min` = minimum_set_value,
+      `Set TV median` = median_set_value,
+      `Set TV max` = maximum_set_value,
+      `Rows with obs. TV` =
+        n_rows_with_observed_tv,
+      `Observed TV median` =
+        median_observed_tv,
+      `Observed/(set x weight)` =
+        median_observed_to_weight_scaled_set_ratio,
+      `Inferred rows` = n_inferred_rows
+    )
+
+  show_table(
+    tidal_volume_loss_report,
+    digits = 2
+  )
+}
+```
+
+# Script 03: Variable derivation and final cohort
+
+This section summarizes Script 03 quality checks and final-cohort derivation.
+The diagnostic RDS retains hospitalization-level selected tidal-volume cleaning results. The tables in this
+section summarize those results without displaying hospitalization identifiers.
+
+Historical inclusion-rule sensitivity results may be present in the diagnostic RDS from an earlier workflow.
+Their presence does not establish that they were regenerated for the current run, and this report does not
+use them to determine the current cohort or quality-control status.
+
+## Script 03 status
+
+```{r}
+#| results: asis
+
+if (is.null(qc03)) {
+  cat("*Script 03 diagnostics are not available.*")
+} else {
+  script03_metadata <- qc03$metadata
+
+  overall_status <- script03_metadata$overall_status[[1]]
+
+  status_text <- if (
+    identical(overall_status, "PASS")
+  ) {
+    paste0(
+      "**Overall Script 03 QC status: PASS.** ",
+      "All retained integrity checks completed successfully."
+    )
+  } else {
+    paste0(
+      "**Overall Script 03 QC status: REVIEW.** ",
+      "At least one retained integrity check requires review."
+    )
+  }
+
+  cat(status_text)
+}
+```
+
+## Human-readable QC summary
+
+```{r}
+if (is.null(qc03)) {
+  cat("*Script 03 QC summary is not available.*")
+} else {
+  script03_summary_report <- qc03$summary %>%
+    transmute(
+      `QC area` = qc_area,
+      Result = result,
+      Status = status
+    )
+
+  show_table(
+    script03_summary_report
+  )
+}
+```
+
+## Eligible post-intubation timepoints
+
+```{r}
+show_table(qc03$post_intubation_timepoints$input_summary)
+show_table(qc03$post_intubation_timepoints$context_summary)
+show_table(qc03$post_intubation_timepoints$context_source_summary)
+```
+
+```{r}
+show_table(qc03$post_intubation_timepoints$input_checks)
+show_table(qc03$post_intubation_timepoints$context_checks)
+```
+
+## Selected analytic tidal-volume cleaning
+
+Script 01 inclusion requires a positive tidal volume during confirmed invasive support within one hour of a qualifying
+respiratory anchor. Script 03 additionally applies source-specific tidal-volume thresholds to the originally selected
+value before calculating normalized tidal volumes and respiratory mechanics.
+
+Invalidated values become missing, but their rows and original sources are preserved. An invalidated set value is not
+replaced with an observed value after cleaning. Timepoints without a usable cleaned value cannot pass the completeness
+gate; a hospitalization can remain eligible through another complete timepoint.
+
+### Applied thresholds
+
+```{r}
+show_table(selected_tv_qc$thresholds)
+```
+
+### Cleaning results by original source
+
+```{r}
+show_table(selected_tv_qc$summary)
+```
+
+### Hospitalization-level retention
+
+```{r}
+show_table(selected_tv_qc$retention)
+```
+
+### Cleaning integrity checks
+
+```{r}
+show_table(selected_tv_qc$checks)
+```
+
+## Script 03 cohort funnel
+
+The funnel begins with hospitalizations having PBW and positive PFVC, then
+requires a complete eligible invasive timepoint, and ends with hospitalizations
+having a complete eligible invasive timepoint meeting at least one hypoxemia
+criterion: OI ≥ 4, OSI ≥ 5, PF ratio ≤ 300, or SF ratio ≤ 250. VT/PBW remains
+an analytic variable and is not restricted to 4–8 mL/kg for eligibility.
+
+```{r}
+if (is.null(qc03)) {
+  cat("*Script 03 cohort funnel is not available.*")
+} else {
+  script03_funnel_report <- qc03$cohort_funnel %>%
+    transmute(
+      Step = filter_step,
+      `Hospitalizations remaining` =
+        n_hospitalizations,
+      `Removed at step` =
+        n_removed_at_step,
+      `Retained from previous step (%)` =
+        percent_retained_from_previous_step,
+      `Retained from PBW/PFVC cohort (%)` =
+        percent_retained_from_pbw_pfvc
+    )
+
+  show_table(
+    script03_funnel_report
+  )
+}
+```
+
+## Funnel reconciliation
+
+Each funnel count was calculated independently a second time. Agreement
+indicates that the cohort filters and final outputs are internally consistent.
+
+```{r}
+if (is.null(qc03)) {
+  cat("*Script 03 funnel reconciliation is not available.*")
+} else {
+  script03_reconciliation_report <-
+    qc03$funnel_reconciliation %>%
+    transmute(
+      Checkpoint = checkpoint,
+      `Funnel count` = funnel_count,
+      `Independent count` =
+        independently_calculated_count,
+      `Counts agree` = counts_agree,
+      Difference = difference
+    )
+
+  show_table(
+    script03_reconciliation_report
+  )
+}
+```
+
+## Final variable availability
+
+```{r}
+if (is.null(qc03)) {
+  cat("*Final variable-availability results are not available.*")
+} else {
+  final_availability_report <-
+    qc03$final_variable_availability %>%
+    transmute(
+      Variable = variable,
+      Available = n_available,
+      Missing = n_missing,
+      `Available (%)` = percent_available
+    )
+
+  show_table(
+    final_availability_report
+  )
+}
+```
+
+Driving pressure was not required for cohort inclusion because pressure
+measurements were not available at every qualifying timepoint.
+
+## Height-bin coverage
+
+These diagnostics assess height-group assignment in the final cross-sectional cohort before
+distribution-export group filtering. Bin intervals include their lower boundary and exclude their upper boundary.
+
+The lower extension covers 80 to under 92 cm. The upper extension covers accepted heights from 182 through
+200 cm within the final open-ended bin. Coverage does not mean that every group was exported or that every
+histogram cell meets an approved disclosure policy.
+
+```{r}
+#| label: height-bin-diagnostic-validation
+
+height_bin_qc <- qc03$height_bin_coverage
+
+if (!is.list(height_bin_qc)) {
+  stop("Height-bin coverage diagnostics are missing. Complete the updated Script 03 before rendering.")
+}
+
+required_height_bin_components <- c(
+  "bin_edges_cm",
+  "interval_rule",
+  "population",
+  "interpretation",
+  "summary",
+  "bin_counts_before_filtering",
+  "hospitalization_level",
+  "checks"
+)
+
+missing_height_bin_components <- setdiff(
+  required_height_bin_components,
+  names(height_bin_qc)
+)
+
+if (length(missing_height_bin_components) > 0L) {
+  stop(
+    "Height-bin coverage diagnostics are missing component(s): ",
+    paste(missing_height_bin_components, collapse = ", ")
+  )
+}
+```
+
+### Coverage summary
+
+```{r}
+#| label: height-bin-coverage-summary
+
+height_bin_summary_report <- height_bin_qc$summary %>%
+  transmute(
+    `Final hospitalizations` = n_hospitalizations,
+    `Valid analytic heights` = n_valid_analytic_heights,
+    `Assigned to a bin` = n_assigned_to_height_bin,
+    Unassigned = n_unassigned,
+    `80 to under 92 cm` = n_in_lower_extension,
+    `182 through 200 cm` = n_in_upper_extension
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to = "Measure",
+    values_to = "Hospitalizations"
+  )
+
+show_table(height_bin_summary_report, digits = 0)
+```
+
+### Observed height-group counts before export filtering
+
+The saved counts contain observed groups; absent bins are not automatically filled with zeros.
+These counts precede the minimum-group-size filter used for distribution exports and are not a disclosure clearance.
+
+```{r}
+#| label: height-bin-observed-counts
+
+height_bin_counts_report <- height_bin_qc$bin_counts_before_filtering %>%
+  transmute(
+    `Height interval (cm)` = height_bin,
+    Hospitalizations = n_hospitalizations
+  )
+
+show_table(height_bin_counts_report, digits = 0)
+```
+
+### Height-bin integrity checks
+
+```{r}
+#| label: height-bin-integrity-checks
+
+show_table(height_bin_qc$checks)
+```
+
+Hospitalization-level height assignments remain in the local diagnostic RDS and are not displayed here.
+
+## Daily respiratory pSOFA: measured and imputed oxygenation
+
+Respiratory pediatric Sequential Organ Failure Assessment (pSOFA) scoring uses the measured arterial
+oxygen partial pressure-to-inspired oxygen fraction ratio (PF ratio) when available. An oxygen-saturation-imputed
+PF ratio is used only when the measured ratio is unavailable. Unavailable respiratory scores retain the existing
+zero-fill rule.
+
+The measured-only comparison below holds all other organ scores fixed. It isolates the respiratory fallback
+change; it does not estimate the combined effect of earlier laboratory cleaning or other pipeline changes.
+
+Inputs retain the existing admission-relative daily extrema. These diagnostics do not introduce newly
+time-matched oxygen-saturation and inspired-oxygen measurements.
+
+```{r}
+#| label: psofa-respiratory-diagnostic-validation
+
+respiratory_psofa_qc <- qc03$psofa_respiratory_derivation
+
+if (!is.list(respiratory_psofa_qc)) {
+  stop("Respiratory pSOFA derivation diagnostics are missing. Complete the updated Script 03 before rendering.")
+}
+
+required_respiratory_psofa_components <- c(
+  "policy",
+  "missing_score_policy",
+  "timing_note",
+  "comparison_note",
+  "source_summary",
+  "score_comparison",
+  "device_linkage",
+  "hospitalization_day_detail",
+  "checks"
+)
+
+missing_respiratory_psofa_components <- setdiff(
+  required_respiratory_psofa_components,
+  names(respiratory_psofa_qc)
+)
+
+if (length(missing_respiratory_psofa_components) > 0L) {
+  stop(
+    "Respiratory pSOFA diagnostics are missing component(s): ",
+    paste(missing_respiratory_psofa_components, collapse = ", ")
+  )
+}
+```
+
+### Oxygenation source and score changes
+
+Counts refer to hospitalization-days, not unique patients. A hospitalization may contribute days under
+more than one oxygenation source.
+
+```{r}
+#| label: psofa-respiratory-source-summary
+
+respiratory_psofa_source_report <- respiratory_psofa_qc$source_summary %>%
+  transmute(
+    `Oxygenation source` = psofa_resp_oxygenation_source,
+    `Hospitalization-days` = n_hospitalization_days,
+    Hospitalizations = n_hospitalizations,
+    `Days with score change` = n_days_with_score_change
+  )
+
+show_table(respiratory_psofa_source_report, digits = 0)
+```
+
+### Measured-only versus implemented respiratory score
+
+A score change is the implemented respiratory score minus the measured-only respiratory score.
+For days without measured oxygenation, the measured-only comparison retains the existing zero-fill rule.
+
+```{r}
+#| label: psofa-respiratory-score-comparison
+
+respiratory_psofa_comparison_report <- respiratory_psofa_qc$score_comparison %>%
+  transmute(
+    Source = psofa_resp_oxygenation_source,
+    `Measured-only score` = respiratory_score_measured_only,
+    `Implemented score` = respiratory_score_actual,
+    Change = respiratory_score_change,
+    `Hospitalization-days` = n_hospitalization_days
+  )
+
+show_table(respiratory_psofa_comparison_report, digits = 0)
+```
+
+### Respiratory-device mapping
+
+The table reports whether each selected device label was covered by the shared device-rank mapping.
+Mapping coverage is a diagnostic result, not evidence that every source device label is standardized.
+
+```{r}
+#| label: psofa-respiratory-device-linkage
+
+respiratory_psofa_device_report <- respiratory_psofa_qc$device_linkage %>%
+  transmute(
+    Device = device_category,
+    `Linked rank` = device_rank,
+    `Expected rank` = expected_device_rank,
+    `Mapping covered` = device_mapping_covered,
+    `Hospitalization-days` = n_hospitalization_days
+  )
+
+show_table(respiratory_psofa_device_report, digits = 0)
+```
+
+### Respiratory pSOFA integrity checks
+
+```{r}
+#| label: psofa-respiratory-integrity-checks
+
+show_table(respiratory_psofa_qc$checks)
+```
+
+Hospitalization-day detail remains in the local diagnostic RDS and is not displayed here.
+These aggregate tables still require the project's eventual disclosure review.
+
+## Ventilator-free-day outcome
+
+VFD-28 required successful final liberation from invasive mechanical
+ventilation before day 28. Death within 28 days or absence of documented
+successful final liberation resulted in zero VFDs.
+
+```{r}
+if (is.null(qc03)) {
+  cat("*VFD-28 outcome results are not available.*")
+} else {
+  vfd_status_report <- qc03$vfd_outcome_status %>%
+    transmute(
+      Status = vfd_status_label,
+      `Hospitalizations` = n_hospitalizations,
+      `Percent` = percent
+    )
+
+  show_table(
+    vfd_status_report
+  )
+}
+```
+
+# Automated warnings
+
+```{r}
+#| results: asis
+
+report_warnings <- character()
+
+append_integrity_warning <- function(warnings, checks, label) {
+  if (
+    !is.data.frame(checks) ||
+    !all(c("check", "passed") %in% names(checks)) ||
+    !is.logical(checks$passed) ||
+    nrow(checks) == 0L
+  ) {
+    return(c(warnings, paste0(label, ": integrity-check results are missing or malformed.")))
+  }
+
+  failed <- is.na(checks$passed) | !checks$passed
+
+  if (any(failed)) {
+    failed_names <- as.character(checks$check[failed])
+    failed_names[is.na(failed_names) | !nzchar(trimws(failed_names))] <- "Unnamed check"
+
+    warnings <- c(
+      warnings,
+      paste0(
+        label,
+        ": failed or indeterminate check(s): ",
+        paste(failed_names, collapse = ", "),
+        "."
+      )
+    )
+  }
+
+  warnings
+}
+
+report_warnings <- append_integrity_warning(
+  warnings = report_warnings,
+  checks = supplemental_qc$checks,
+  label = "Supplemental height"
+)
+
+report_warnings <- append_integrity_warning(
+  warnings = report_warnings,
+  checks = respiratory_psofa_qc$checks,
+  label = "Daily respiratory pSOFA"
+)
+
+report_warnings <- append_integrity_warning(
+  warnings = report_warnings,
+  checks = height_bin_qc$checks,
+  label = "Height-bin coverage"
+)
+
+if (
+  isTRUE(supplemental_qc$configuration$configured) &&
+  identical(
+    supplemental_qc$configuration$reader_status,
+    "Configured supplemental height file unavailable"
+  )
+) {
+  report_warnings <- c(
+    report_warnings,
+    "The configured supplemental height file was unavailable; supplemental heights were not used."
+  )
+}
+
+intubation_checks <- diagnostics$intubation_identification$integrity_checks
+
+if (!is.null(intubation_checks) && any(!intubation_checks$passed, na.rm = TRUE)) {
+  failed_intubation_checks <- intubation_checks %>%
+    filter(!passed) %>%
+    pull(check)
+  
+  report_warnings <- c(
+    report_warnings,
+    paste0("Intubation-identification check(s) failed: ", paste(failed_intubation_checks, collapse = ", "), ".")
+  )
+}
+
+one_hour_checks <- diagnostics$intubation_identification$one_hour_tidal_volume$checks
+
+if (!is.null(one_hour_checks) && any(!one_hour_checks$passed, na.rm = TRUE)) {
+  failed_one_hour_checks <- one_hour_checks %>%
+    filter(!passed) %>%
+    pull(check)
+  
+  report_warnings <- c(
+    report_warnings,
+    paste0("One-hour tidal-volume check(s) failed: ", paste(failed_one_hour_checks, collapse = ", "), ".")
+  )
+}
+
+waterfall_summary <-
+  diagnostics$waterfall_retention_summary
+
+if (
+  !is.null(waterfall_summary) &&
+  any(
+    waterfall_summary$waterfall_status ==
+      "No waterfall output"
+  )
+) {
+  report_warnings <- c(
+    report_warnings,
+    "At least one hospitalization has no respiratory-waterfall output."
+  )
+}
+
+height_checks <- diagnostics$height$checks
+
+if (!is.null(height_checks) && any(!height_checks$passed, na.rm = TRUE)) {
+  failed_height_checks <- height_checks %>%
+    filter(!passed) %>%
+    pull(check)
+  
+  report_warnings <- c(
+    report_warnings,
+    paste0("Height integrity check(s) failed: ", paste(failed_height_checks, collapse = ", "), ".")
+  )
+}
+
+weight_summary <-
+  diagnostics$weight$availability_summary
+
+if (
+  !is.null(weight_summary) &&
+  any(
+    weight_summary$weight_status ==
+      "Unexpected processing loss"
+  )
+) {
+  report_warnings <- c(
+    report_warnings,
+    "Unexpected processing loss was identified for weight."
+  )
+}
+
+clinical_quality <-
+  diagnostics$clinical_data$quality_summary
+
+if (
+  !is.null(clinical_quality) &&
+  clinical_quality$n_without_demographics > 0
+) {
+  report_warnings <- c(
+    report_warnings,
+    paste0(
+      clinical_quality$n_without_demographics,
+      " hospitalization(s) lack demographics."
+    )
+  )
+}
+
+if (
+  !is.null(clinical_quality) &&
+  clinical_quality$n_missing_discharge_category > 0
+) {
+  report_warnings <- c(
+    report_warnings,
+    paste0(
+      clinical_quality$n_missing_discharge_category,
+      " hospitalization(s) have a missing discharge category."
+    )
+  )
+}
+
+# Script 02 warnings
+if (!is.null(qc02)) {
+  
+  # Warn when cleaning caused complete loss of a data element
+  combined_dropout <-
+    qc02$combined_dropout_summary
+  
+  if (
+    !is.null(combined_dropout) &&
+      any(
+        combined_dropout$
+          n_lost_all_usable_data > 0,
+        na.rm = TRUE
+      )
+  ) {
+    total_complete_losses <- sum(
+      combined_dropout$
+        n_lost_all_usable_data,
+      na.rm = TRUE
+    )
+    
+    affected_data_elements <- sum(
+      combined_dropout$
+        n_lost_all_usable_data > 0,
+      na.rm = TRUE
+    )
+    
+    report_warnings <- c(
+      report_warnings,
+      paste0(
+        total_complete_losses,
+        " hospitalization–data-element combinations across ",
+        affected_data_elements,
+        " data element(s) lost all usable data during ",
+        "Script 02 cleaning."
+      )
+    )
+  }
+  
+  # Report exact duplicate vital rows removed before cleaning
+  vital_integrity <-
+    qc02$vitals$integrity_summary
+  
+  if (!is.null(vital_integrity)) {
+    vital_duplicates_removed <-
+      vital_integrity %>%
+      filter(
+        diagnostic ==
+          "Exact duplicate vital rows removed"
+      ) %>%
+      pull(n)
+    
+    if (
+      length(vital_duplicates_removed) == 1 &&
+        vital_duplicates_removed > 0
+    ) {
+      report_warnings <- c(
+        report_warnings,
+        paste0(
+          format(
+            vital_duplicates_removed,
+            big.mark = ","
+          ),
+          " exact duplicate vital rows were removed ",
+          "before threshold cleaning."
+        )
+      )
+    }
+  }
+  
+  # Flag the possible mixed-unit set tidal-volume pattern
+  tidal_unit_summary <-
+    qc02$respiratory_support$
+      tidal_volume_complete_loss$
+      summary
+  
+  if (
+    !is.null(tidal_unit_summary) &&
+      nrow(tidal_unit_summary) > 0 &&
+      tidal_unit_summary$
+        n_consistent_with_ml_per_kg_mapping > 0
+  ) {
+    report_warnings <- c(
+      report_warnings,
+      paste0(
+        tidal_unit_summary$
+          n_consistent_with_ml_per_kg_mapping,
+        " hospitalization(s) losing all set tidal-volume data ",
+        "showed a pattern consistent with possible mL/kg values ",
+        "in a field expected to contain absolute mL."
+      )
+    )
+  }
+}
+
+# Script 03 warnings
+if (!is.null(qc03)) {
+
+  if (!isTRUE(all(selected_tv_qc$checks$passed))) {
+    report_warnings <- c(
+      report_warnings,
+      "At least one selected analytic tidal-volume cleaning integrity check did not pass."
+    )
+  }
+
+  n_selected_tv_losses <- selected_tv_qc$retention$n_lost_all_selected_volume
+
+  if (length(n_selected_tv_losses) == 1L && !is.na(n_selected_tv_losses) && n_selected_tv_losses > 0L) {
+    report_warnings <- c(
+      report_warnings,
+      paste0(
+        n_selected_tv_losses,
+        " hospitalization(s) lost all selected one-hour tidal-volume values during Script 03 cleaning."
+      )
+    )
+  }
+  
+  # Flag an overall Script 03 QC failure.
+  script03_overall_status <-
+    qc03$metadata$overall_status
+  
+  if (
+    length(script03_overall_status) == 1 &&
+      !is.na(script03_overall_status) &&
+      script03_overall_status != "PASS"
+  ) {
+    report_warnings <- c(
+      report_warnings,
+      paste0(
+        "Script 03 overall QC status is ",
+        script03_overall_status,
+        ". Review the Script 03 QC summary."
+      )
+    )
+  }
+  
+  # Identify individual Script 03 checks marked for review.
+  script03_review_items <- qc03$summary %>%
+    filter(
+      status == "REVIEW"
+    ) %>%
+    pull(qc_area)
+  
+  if (length(script03_review_items) > 0) {
+    report_warnings <- c(
+      report_warnings,
+      paste0(
+        "Script 03 check(s) requiring review: ",
+        paste(
+          script03_review_items,
+          collapse = ", "
+        ),
+        "."
+      )
+    )
+  }
+  
+  # Funnel counts must agree with their independent calculations.
+  script03_reconciliation <-
+    qc03$funnel_reconciliation
+  
+  if (
+    !is.null(script03_reconciliation) &&
+      any(
+        !script03_reconciliation$counts_agree,
+        na.rm = TRUE
+      )
+  ) {
+    failed_checkpoints <-
+      script03_reconciliation %>%
+      filter(
+        !counts_agree
+      ) %>%
+      pull(checkpoint)
+    
+    report_warnings <- c(
+      report_warnings,
+      paste0(
+        "Script 03 funnel reconciliation failed at: ",
+        paste(
+          failed_checkpoints,
+          collapse = ", "
+        ),
+        "."
+      )
+    )
+  }
+}
+
+if (length(report_warnings) == 0) {
+  cat("No automated processing warnings were identified.")
+} else {
+  cat(
+    paste0("- ", report_warnings),
+    sep = "\n"
+  )
+}
+```
+
+# Reproducibility
+
+```{r}
+reproducibility <- tibble(
+  item = c(
+    "Site",
+    "Diagnostic file",
+    "Diagnostic sections",
+    "Script 03 diagnostics generated",
+    "Script 03 QC status",
+    "Script 03 diagnostic scope",
+    "Report generated",
+    "R version",
+    "Quarto version"
+  ),
+  value = c(
+    report_site_name,
+    params$diagnostic_file,
+    paste(names(diagnostics), collapse = ", "),
+    qc03$metadata$generated_at[[1]],
+    qc03$metadata$overall_status[[1]],
+    qc03$metadata$note[[1]],
+    as.character(Sys.time()),
+    R.version.string,
+    as.character(quarto::quarto_version())
+  )
+)
+
+show_table(reproducibility)
+```
