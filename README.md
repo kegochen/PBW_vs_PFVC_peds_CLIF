@@ -109,6 +109,31 @@ can identify the repository explicitly.
 
 The active `config/config.json` is excluded from version control.
 
+### Accepted input filenames
+
+Script 01 expects files named `clif_<table>.<file_type>` in `tables_path`.
+
+The following table names have explicit filename alternatives:
+
+- Respiratory support: `clif_resp_support` or `clif_respiratory_support`.
+- Continuous medication administration: `clif_medication` or
+  `clif_medication_admin_continuous`.
+- Patient assessments: `clif_patient_assessment` or `clif_patient_assessments`.
+
+Append the configured extension: `.parquet`, `.csv`, or `.fst`.
+
+Exactly one alternative must exist for each of these tables. If both exist,
+the loader stops rather than selecting one silently. It also stops if an
+expected filename identifies a directory.
+
+Other required table stems are `patient`, `hospitalization`, `adt`, `vitals`,
+`labs`, and `patient_procedures`, each with the `clif_` prefix and configured
+extension.
+
+The medication input must contain continuous administrations only.
+Filename aliases do not rename columns, convert units, standardize clinical
+categories, or prove schema compliance.
+
 ### Optional supplemental height
 
 For a standard supplemental CSV, use:

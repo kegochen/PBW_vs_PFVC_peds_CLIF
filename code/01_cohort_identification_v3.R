@@ -156,12 +156,61 @@ if (!file_type %in% supported_file_types) {
   stop("Unsupported file type: ", file_type, ". Supported types: ", paste(supported_file_types, collapse = ", "), ".")
 }
 
-table_paths <- set_names(file.path(tables_path, paste0("clif_", table_names, ".", file_type)), table_names)
-missing_table_paths <- table_paths[!file.exists(table_paths)]
+# Accept the existing local filenames and standard CLIF table filenames.
+# These aliases change file selection only, not columns or clinical meanings.
+# The medication input must contain continuous administrations only.
+table_filename_stems <- set_names(as.list(table_names), table_names)
+table_filename_stems$resp_support <- c("resp_support", "respiratory_support")
+table_filename_stems$medication <- c("medication", "medication_admin_continuous")
+table_filename_stems$patient_assessment <- c("patient_assessment", "patient_assessments")
 
-if (length(missing_table_paths) > 0L) {
-  stop("Missing required CLIF table(s): ", paste(missing_table_paths, collapse = "; "))
-}
+table_paths <- vapply(
+  table_names,
+  function(table_name) {
+    candidates <- file.path(
+      tables_path,
+      paste0("clif_", table_filename_stems[[table_name]], ".", file_type)
+    )
+    
+    if (any(dir.exists(candidates))) {
+      stop(
+        "A CLIF input filename identifies a directory: ",
+        paste(candidates[dir.exists(candidates)], collapse = "; ")
+      )
+    }
+    
+    existing_candidates <- candidates[file.exists(candidates)]
+    
+    if (length(existing_candidates) == 0L) {
+      stop(
+        "Missing required CLIF table `", table_name,
+        "`. Expected exactly one of: ",
+        paste(candidates, collapse = "; ")
+      )
+    }
+    
+    if (length(existing_candidates) > 1L) {
+      stop(
+        "Ambiguous CLIF input for `", table_name,
+        "`: both filename alternatives exist. No file was selected: ",
+        paste(existing_candidates, collapse = "; ")
+      )
+    }
+    
+    existing_candidates[[1L]]
+  },
+  character(1)
+)
+
+names(table_paths) <- table_names
+
+message("---- Selected CLIF input files ----")
+walk2(names(table_paths), table_paths, ~ message(.x, ": ", .y))
+
+rm(table_filename_stems)
+
+# Retained for the existing cleanup block below.
+missing_table_paths <- character()
 
 read_clif_table <- function(path, type) {
   switch(
