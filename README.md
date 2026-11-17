@@ -5,6 +5,11 @@ Longitudinal ICU data Format (CLIF) study comparing predicted body weight
 (PBW) and predicted forced vital capacity (PFVC) normalization of respiratory
 physiology measures.
 
+For a high-level description of the pediatric cohort, analysis workflow,
+outputs, and interpretation limits, see the
+[Executive summary](EXECUTIVE_SUMMARY.md). It describes intended behavior,
+not verified end-to-end execution or an approved study protocol.
+
 ## Current status
 
 This repository is undergoing refactoring for GitHub-based federated execution.
@@ -72,6 +77,14 @@ The development machine has Quarto 1.10.19 and TinyTeX available. Availability
 does not establish successful rendering on that machine or another system.
 
 ## Site configuration
+
+The development site's inputs are reported to comply with CLIF version 2.1,
+with datetime strings expressed in UTC. Each participating site must confirm
+its own schema, units, clinical mappings, and timestamp convention before
+execution; filename compatibility alone does not establish those properties.
+
+The patient-assessment input uses `numeric_value` for numeric assessments,
+including GCS total. The pipeline does not assume a `numerical_value` column.
 
 Copy `config/config_template.json` to `config/config.json`, then edit the copy:
 
@@ -160,8 +173,11 @@ file is reported, and cohort identification continues using CLIF vitals.
 
 Encounter linkage and patient-conflict checks are retained in local diagnostics.
 Patient-only unlinked records are not used as height donors by this reader.
-Measurement-date precision, timezone, and policy require further review; do not
-invent measurement times.
+
+Cross-encounter donor eligibility uses hospitalization admission timestamps
+and the existing age-dependent windows. Supplemental measurement dates remain
+unparsed source text for provenance and do not determine donor eligibility.
+Do not invent measurement times.
 
 ## Execution: analysis and reporting are separate
 
@@ -298,7 +314,7 @@ Before describing this workflow as execution-ready, complete the remaining
 reviews, including:
 
 - Shared CLIF schema and timestamp compatibility.
-- Supplemental measurement-date policy.
+- Supplemental measurement-date provenance and source precision.
 - Growth-reference provenance and version.
 - Diagnostic preservation on reruns.
 - Reporting failure paths and recovery behavior.

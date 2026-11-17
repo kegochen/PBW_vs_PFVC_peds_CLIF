@@ -145,12 +145,50 @@ render_diagnostic_reports <- function(config) {
     
     reporting_operation <<- paste("Verify copied file checksum:", to)
     
-    if (!identical(
-      unname(tools::md5sum(from)),
-      unname(tools::md5sum(to))
-    )) {
+    source_checksum <- unname(tools::md5sum(from))
+    destination_checksum <- unname(tools::md5sum(to))
+    
+    valid_checksum <- function(value) {
+      is.character(value) &&
+        length(value) == 1L &&
+        !is.na(value) &&
+        grepl("^[[:xdigit:]]{32}$", value)
+    }
+    
+    if (
+      !valid_checksum(source_checksum) ||
+      !valid_checksum(destination_checksum)
+    ) {
+      stop(
+        "Checksum verification could not be completed: ",
+        from, " -> ", to,
+        ". The copied file was retained; no retry or deletion was performed."
+      )
+    }
+    
+    if (!identical(source_checksum, destination_checksum)) {
       stop("Copied file failed checksum comparison: ", to)
     }
+  }
+  
+  validated_checksum_snapshot <- function(paths, label) {
+    reporting_operation <<- paste("Read checksum snapshot:", label)
+    
+    checksums <- tools::md5sum(paths)
+    
+    valid <- is.character(checksums) &&
+      length(checksums) == length(paths) &&
+      !anyNA(checksums) &&
+      all(grepl("^[[:xdigit:]]{32}$", checksums))
+    
+    if (!valid) {
+      stop(
+        "Checksum snapshot could not be completed for ", label,
+        ". No automatic retry was performed."
+      )
+    }
+    
+    checksums
   }
   
   validate_pdf <- function(path) {
@@ -303,6 +341,42 @@ render_diagnostic_reports <- function(config) {
     stop("Saved normalization reporting destination or count differs from contract.")
   }
   
+  saved_report_type_counts <- normalization$reporting$report_inclusive_expected_type_counts
+  
+  if (
+    !is.data.frame(saved_report_type_counts) ||
+    !all(c("extension", "expected_n") %in% names(saved_report_type_counts)) ||
+    nrow(saved_report_type_counts) != 2L
+  ) {
+    stop("Saved report-inclusive output-type contract is missing or malformed.")
+  }
+  
+  saved_extensions <- as.character(saved_report_type_counts$extension)
+  saved_counts <- saved_report_type_counts$expected_n
+  
+  if (
+    anyNA(saved_extensions) ||
+    anyDuplicated(saved_extensions) ||
+    !setequal(saved_extensions, c("csv", "pdf")) ||
+    !is.numeric(saved_counts) ||
+    anyNA(saved_counts) ||
+    any(!is.finite(saved_counts)) ||
+    any(saved_counts != as.integer(saved_counts))
+  ) {
+    stop("Saved report-inclusive output-type contract contains invalid values.")
+  }
+  
+  ordered_saved_counts <- as.integer(
+    saved_counts[match(c("csv", "pdf"), saved_extensions)]
+  )
+  
+  if (!identical(ordered_saved_counts, c(14L, 6L))) {
+    stop(
+      "Saved report-inclusive output-type contract differs from the required ",
+      "14 CSV and 6 PDF artifacts."
+    )
+  }
+  
   parameters <- list(
     cohort = list(diagnostic_file = paths$cohort, site_name = site),
     analysis = list(
@@ -329,8 +403,14 @@ render_diagnostic_reports <- function(config) {
   if (!dir.create(backup_dir)) stop("Could not create reporting backup directory.")
   
   started_at <- Sys.time()
-  input_hashes <- tools::md5sum(unlist(paths, use.names = FALSE))
-  source_hashes <- tools::md5sum(source_paths)
+  input_hashes <- validated_checksum_snapshot(
+    unlist(paths, use.names = FALSE),
+    "saved diagnostic inputs before rendering"
+  )
+  source_hashes <- validated_checksum_snapshot(
+    source_paths,
+    "repository QMD sources before rendering"
+  )
   
   # Preserve the original diagnostic artifacts before any reporting update.
   for (name in names(paths)) {
@@ -369,10 +449,19 @@ render_diagnostic_reports <- function(config) {
     validate_pdf(staged_paths[[name]])
   }
   
-  # Reject changes to saved inputs or QMD sources during rendering.
+  # Reject unavailable checksums or changes to saved inputs and QMD sources.
+  input_hashes_after_render <- validated_checksum_snapshot(
+    unlist(paths, use.names = FALSE),
+    "saved diagnostic inputs after rendering"
+  )
+  source_hashes_after_render <- validated_checksum_snapshot(
+    source_paths,
+    "repository QMD sources after rendering"
+  )
+  
   if (
-    !identical(tools::md5sum(unlist(paths, use.names = FALSE)), input_hashes) ||
-    !identical(tools::md5sum(source_paths), source_hashes)
+    !identical(input_hashes_after_render, input_hashes) ||
+    !identical(source_hashes_after_render, source_hashes)
   ) {
     stop("Inputs or report sources changed during rendering; reports were not published.")
   }
