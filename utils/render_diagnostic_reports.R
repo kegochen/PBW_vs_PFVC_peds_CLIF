@@ -271,6 +271,7 @@ render_diagnostic_reports <- function(config) {
   }
   
   site <- config$site_name
+  message("Reporting starting: ", site)
   paths <- list(
     cohort = require_file(file.path(
       config$cohort_diagnostic_dir, "cohort_diagnostics.rds"
@@ -398,6 +399,7 @@ render_diagnostic_reports <- function(config) {
   }
   run_dir <- normalizePath(run_dir, winslash = "/", mustWork = TRUE)
   reporting_run_directory <- run_dir
+  message("Reporting | retained run: ", run_dir)
   
   backup_dir <- file.path(run_dir, "backups")
   if (!dir.create(backup_dir)) stop("Could not create reporting backup directory.")
@@ -424,11 +426,62 @@ render_diagnostic_reports <- function(config) {
   
   for (name in names(report_names)) {
     destination <- file.path(run_dir, name)
-    if (!dir.create(destination)) stop("Could not create report staging directory.")
     
-    reporting_operation <- paste("Render PDF:", source_paths[[name]])
+    if (!dir.create(destination)) {
+      stop("Could not create report staging directory: ", destination)
+    }
+    
+    destination <- normalizePath(
+      destination,
+      winslash = "/",
+      mustWork = TRUE
+    )
+    
+    # Render a verified, retained copy of the repository QMD beside its output.
+    # A relative output directory avoids cross-drive absolute-path routing.
+    staged_source_path <- file.path(
+      destination,
+      basename(source_paths[[name]])
+    )
+    
+    copy_verified(
+      source_paths[[name]],
+      staged_source_path,
+      overwrite = FALSE
+    )
+    
+    # Reject inherited Quarto project routing at the new staging location.
+    staging_ancestor <- destination
+    
+    repeat {
+      project_candidates <- file.path(
+        staging_ancestor,
+        c("_quarto.yml", "_quarto.yaml")
+      )
+      
+      found_projects <- project_candidates[file.exists(project_candidates)]
+      
+      if (length(found_projects) > 0L) {
+        stop(
+          "Quarto project configuration applies to the staging directory. ",
+          "Review routing before rendering: ",
+          paste(found_projects, collapse = "; ")
+        )
+      }
+      
+      parent_directory <- dirname(staging_ancestor)
+      
+      if (identical(parent_directory, staging_ancestor)) {
+        break
+      }
+      
+      staging_ancestor <- parent_directory
+    }
+    
+    reporting_operation <- paste("Render staged PDF:", staged_source_path)
+    message("Reporting | rendering: ", name)
     quarto::quarto_render(
-      input = source_paths[[name]],
+      input = staged_source_path,
       output_format = "pdf",
       output_file = report_names[[name]],
       execute = TRUE,
@@ -436,17 +489,16 @@ render_diagnostic_reports <- function(config) {
       execute_dir = config$repo_root,
       cache = FALSE,
       use_freezer = FALSE,
-      quarto_args = c(
-        "--output-dir",
-        normalizePath(destination, winslash = "/", mustWork = TRUE),
-        "--no-clean"
-      ),
+      quarto_args = c("--output-dir", ".", "--no-clean"),
       quiet = FALSE,
       as_job = FALSE
     )
     
+    message("Reporting | render returned: ", name)
     staged_paths[[name]] <- file.path(destination, report_names[[name]])
+    reporting_operation <- paste("Validate staged PDF:", staged_paths[[name]])
     validate_pdf(staged_paths[[name]])
+    message("Reporting | staged PDF validated: ", name)
   }
   
   # Reject unavailable checksums or changes to saved inputs and QMD sources.
@@ -478,8 +530,10 @@ render_diagnostic_reports <- function(config) {
     }
   }
   
+  message("Reporting | staged reports validated; publishing final PDFs")
   for (name in names(final_paths)) {
     copy_verified(staged_paths[[name]], final_paths[[name]], overwrite = TRUE)
+    reporting_operation <- paste("Validate published PDF:", final_paths[[name]])
     validate_pdf(final_paths[[name]])
   }
   
@@ -556,6 +610,7 @@ render_diagnostic_reports <- function(config) {
     stop("The original analysis manifest was altered.")
   }
   
+  message("Reporting | saving reporting status and synchronizing diagnostics")
   save_readback(normalization, paths$normalization)
   latest_model[[section]] <- readRDS(paths$normalization)
   
@@ -588,10 +643,8 @@ render_diagnostic_reports <- function(config) {
   save_readback(result, file.path(run_dir, "reporting_result.rds"))
   reporting_completed <- TRUE
   
-  message("Diagnostic reporting complete for site: ", site)
-  message("Validated PDFs: ", paste(final_paths, collapse = "; "))
-  message("Retained run files and backups: ", run_dir)
-  message("Normalization reporting status saved and synchronized into model QC.")
+  message("Reporting complete: ", site, " | 3 PDFs published; diagnostics synchronized.")
+  message("Retained reporting result and backups: ", run_dir)
   
   invisible(result)
 }

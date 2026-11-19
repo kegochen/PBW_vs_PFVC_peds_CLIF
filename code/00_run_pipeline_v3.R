@@ -126,9 +126,7 @@ run_pbwpfvc_analysis <- function(
     )
   }
   
-  message("Starting single-site analysis: ", context$config$site_name)
-  message("Existing analysis outputs may be overwritten by the scripts.")
-  message("Diagnostic report rendering is not part of this invocation.")
+  message("Analysis starting: ", context$config$site_name)
   
   completed_scripts <- character()
   
@@ -173,13 +171,13 @@ run_pbwpfvc_analysis <- function(
     }
     
     completed_scripts <- c(completed_scripts, script_names[[index]])
-    message("Subprocess returned successfully: ", script_names[[index]])
+    invisible(gc())
+    message("Completed: ", script_names[[index]])
   }
   
   message(
-    "All five analysis subprocesses returned successfully. ",
-    "This is process completion, not independent scientific validation. ",
-    "Diagnostic reporting remains a separate explicit step."
+    "Analysis complete: ", length(completed_scripts),
+    " scripts returned successfully."
   )
   
   invisible(list(
@@ -203,8 +201,7 @@ run_pbwpfvc_reports <- function(
     stop("Reporting utility not found: ", utility)
   }
   
-  # This separate invocation changes report files and reporting status.
-  # It does not run any analysis script.
+  # Render saved diagnostics and update reporting status without rerunning analysis.
   callr::r(
     func = function(utility_path, config) {
       reporting_environment <- new.env(parent = globalenv())

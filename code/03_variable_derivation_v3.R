@@ -117,9 +117,6 @@ if (!dir.exists(final_dir)) {
 }
 
 message("Script 03 starting | site: ", site_name)
-message("Intermediate input/output directory: ", output_dir)
-message("Cohort diagnostic directory: ", diagnostic_dir)
-message("Final output directory: ", final_dir)
 
 # Fixed bin edges must match across sites so site-specific histograms can be combined.
 PBWPFVC_BIN_EDGES <- seq(0, 50, by = 1)
@@ -256,6 +253,7 @@ if (length(missing_input_files) > 0L) {
   stop("Script 03 is missing required input file(s): ", paste(missing_input_files, collapse = ", "))
 }
 
+message("Script 03 | loading and validating inputs")
 cohort_ids <- readRDS(file.path(output_dir, "cohort_hospitalization_ids.rds"))
 resp_waterfall <- read_parquet(file.path(output_dir, "resp_support_waterfall_clean.parquet"))
 post_intubation_timepoints <- read_parquet(file.path(output_dir, "post_intubation_tidal_volume_rows.parquet"))
@@ -361,11 +359,12 @@ post_intubation_input_checks_table <- tibble(
   passed = as.logical(unlist(post_intubation_input_checks, use.names = FALSE))
 )
 
-message("---- Script 03 post-intubation input summary ----")
-print(post_intubation_input_summary, width = Inf)
-print(post_intubation_method_summary, n = Inf, width = Inf)
-print(post_intubation_method_event_consistency, n = Inf, width = Inf)
-print(post_intubation_input_checks_table, n = Inf, width = Inf)
+if (!isTRUE(all(post_intubation_input_checks_table$passed))) {
+  print(post_intubation_input_summary, width = Inf)
+  print(post_intubation_method_summary, n = Inf, width = Inf)
+  print(post_intubation_method_event_consistency, n = Inf, width = Inf)
+  print(post_intubation_input_checks_table, n = Inf, width = Inf)
+}
 
 stopifnot(isTRUE(all(post_intubation_input_checks_table$passed)))
 
@@ -423,9 +422,10 @@ height_provenance_input_checks_table <- tibble(
   passed = as.logical(unlist(height_provenance_input_checks, use.names = FALSE))
 )
 
-message("---- Script 03 height-provenance input summary ----")
-print(height_provenance_input_summary, width = Inf)
-print(height_provenance_input_checks_table, n = Inf, width = Inf)
+if (!isTRUE(all(height_provenance_input_checks_table$passed))) {
+  print(height_provenance_input_summary, width = Inf)
+  print(height_provenance_input_checks_table, n = Inf, width = Inf)
+}
 
 stopifnot(isTRUE(all(height_provenance_input_checks_table$passed)))
 
@@ -442,7 +442,6 @@ cohort_meds <- cohort_meds %>%
 cohort_assessments <- cohort_assessments %>%
   mutate(recorded_dttm = ymd_hms(recorded_dttm))
 
-message("Loaded all cleaned intermediate data")
 
 required_weight_comparison_columns <- c(
   "hospitalization_id", "weight_kg", "weight_source", "weight_outside_expected_range"
@@ -482,8 +481,12 @@ height_join_integrity <- tibble(
         sum(!cohort_heights$hospitalization_id %in% cohort_ids))
 )
 
-message("---- Height-join integrity ----")
-print(height_join_integrity, n = Inf)
+
+if (anyNA(cohort_ids) || anyDuplicated(cohort_ids) ||
+    anyDuplicated(cohort_demographics$hospitalization_id) ||
+    anyDuplicated(cohort_heights$hospitalization_id)) {
+  print(height_join_integrity, n = Inf)
+}
 
 if (anyNA(cohort_ids)) {
   stop("The index cohort contains missing hospitalization IDs.")
@@ -518,14 +521,12 @@ height_join_funnel <- tibble(
 ) %>%
   mutate(n_removed = lag(n_hospitalizations) - n_hospitalizations)
 
-message("---- Retention after cleaned-height join ----")
-print(height_join_summary, n = Inf, width = Inf)
-print(height_join_funnel, n = Inf)
 
 # =============================================================================
 # 3a. Calculate PBW and PFVC
 # =============================================================================
 
+message("Script 03 | deriving body-size predictions and oxygenation")
 pbw_pfvc_calculated <- cohort_demographics %>%
   select(hospitalization_id, patient_id, age_at_admission, sex_category, race_category, deceased) %>%
   inner_join(cohort_heights, by = "hospitalization_id", relationship = "one-to-one") %>%
@@ -594,9 +595,6 @@ pbw_pfvc_calculation_funnel <- tibble(
 ) %>%
   mutate(n_removed = lag(n_hospitalizations) - n_hospitalizations)
 
-message("---- PBW/PFVC calculation retention ----")
-print(pbw_pfvc_calculation_summary, n = Inf, width = Inf)
-print(pbw_pfvc_calculation_funnel, n = Inf)
 
 pbw_pfvc_data <- pbw_pfvc_calculated %>%
   filter(!is.na(pbw), !is.na(pfvc), pfvc > 0) %>%
@@ -651,13 +649,13 @@ pbw_pfvc_height_provenance_checks_table <- tibble(
   passed = as.logical(unlist(pbw_pfvc_height_provenance_checks, use.names = FALSE))
 )
 
-message("---- PBW/PFVC height provenance ----")
-print(pbw_pfvc_height_provenance_summary, n = Inf, width = Inf)
-print(pbw_pfvc_height_provenance_checks_table, n = Inf, width = Inf)
+if (!isTRUE(all(pbw_pfvc_height_provenance_checks_table$passed))) {
+  print(pbw_pfvc_height_provenance_summary, n = Inf, width = Inf)
+  print(pbw_pfvc_height_provenance_checks_table, n = Inf, width = Inf)
+}
 
 stopifnot(isTRUE(all(pbw_pfvc_height_provenance_checks_table$passed)))
 
-message("PBW/PFVC calculated: ", nrow(pbw_pfvc_data), " hospitalizations")
 
 write_parquet(pbw_pfvc_data, file.path(output_dir, "analysis_broad_pfvc.parquet"))
 
@@ -714,8 +712,6 @@ fio2_availability_summary <- tibble(hospitalization_id = cohort_ids) %>%
   count(fio2_status, name = "n_hospitalizations") %>%
   mutate(percent = round(100 * n_hospitalizations / sum(n_hospitalizations), 1))
 
-message("---- FiO2 availability ----")
-print(fio2_availability_summary, n = Inf, width = Inf)
 
 # =============================================================================
 # Calculate SF ratio at each eligible SpO2 measurement
@@ -740,8 +736,6 @@ spo2_filter_summary <- tibble(
         sum(spo2_before_range_filter$vital_value > 97, na.rm = TRUE))
 )
 
-message("---- SpO2 filtering summary ----")
-print(spo2_filter_summary, n = Inf, width = Inf)
 
 spo2_dt <- as.data.table(spo2_data)
 setkey(spo2_dt, hospitalization_id, spo2_dttm_num)
@@ -775,8 +769,6 @@ sf_match_summary <- tibble(
         n_distinct(sf_joined_raw$hospitalization_id[sf_joined_raw$matched_fio2]))
 )
 
-message("---- SpO2-to-FiO2 matching ----")
-print(sf_match_summary, n = Inf, width = Inf)
 
 sf_joined <- sf_joined_raw %>%
   filter(matched_fio2, !is.na(spo2_value)) %>%
@@ -848,8 +840,6 @@ pf_match_summary <- tibble(
         n_distinct(pf_joined_raw$hospitalization_id[pf_joined_raw$matched_fio2]))
 )
 
-message("---- PaO2-to-FiO2 matching ----")
-print(pf_match_summary, n = Inf, width = Inf)
 
 pf_joined <- pf_joined_raw %>%
   filter(matched_fio2, !is.na(pao2_value), is.finite(pao2_value), pao2_value > 0) %>%
@@ -966,8 +956,6 @@ oi_match_summary <- tibble(
         n_distinct(oi_joined$pao2_row_id), n_distinct(oi_joined$hospitalization_id))
 )
 
-message("---- OI matching summary ----")
-print(oi_match_summary, n = Inf, width = Inf)
 
 # =============================================================================
 # Calculate OSI at eligible SpO2 measurement times
@@ -1032,8 +1020,6 @@ osi_match_summary <- tibble(
         n_distinct(osi_joined$spo2_row_id), n_distinct(osi_joined$hospitalization_id))
 )
 
-message("---- OSI matching summary ----")
-print(osi_match_summary, n = Inf, width = Inf)
 
 # =============================================================================
 # QC: oxygenation-metric validity and distribution
@@ -1084,11 +1070,7 @@ oxygenation_metric_validity_summary <- oxygenation_metric_distribution_summary %
 oxygenation_metric_quantile_summary <- oxygenation_metric_distribution_summary %>%
   select(metric, minimum, p01, p05, q1, median, q3, p95, p99, maximum, threshold_definition)
 
-message("---- Oxygenation-metric validity ----")
-print(oxygenation_metric_validity_summary, n = Inf, width = Inf)
 
-message("---- Oxygenation-metric distributions ----")
-print(oxygenation_metric_quantile_summary, n = Inf, width = Inf)
 
 rm(summarise_oxygenation_metric)
 
@@ -1096,6 +1078,7 @@ rm(summarise_oxygenation_metric)
 # 3c. Calculate daily pSOFA scores
 # =============================================================================
 
+message("Script 03 | deriving pSOFA and respiratory mechanics")
 admission_times <- cohort_demographics %>%
   select(hospitalization_id, admission_dttm)
 
@@ -1238,8 +1221,6 @@ resp_daily_device_selection_summary <- tibble(
         sum(resp_daily_selection$selected_device_category == "Cpap", na.rm = TRUE))
 )
 
-message("---- Daily pSOFA respiratory-device selection ----")
-print(resp_daily_device_selection_summary, n = Inf, width = Inf)
 
 resp_daily <- resp_daily_selection %>%
   transmute(hospitalization_id, sofa_day, fio2_set, device_category = selected_device_category)
@@ -1473,13 +1454,6 @@ psofa_respiratory_derivation_qc <- list(
   checks = psofa_respiratory_derivation_checks_table
 )
 
-message(
-  "Respiratory pSOFA QC passed: ",
-  sum(psofa_respiratory_day_qc$psofa_resp_oxygenation_source == "SpO2-imputed PaO2"),
-  " imputed-source days; ",
-  sum(psofa_respiratory_day_qc$respiratory_score_change != 0L),
-  " days changed versus measured-only scoring."
-)
 
 rm(score_daily_respiratory_psofa)
 
@@ -1493,9 +1467,7 @@ sofa_scores <- sofa_daily %>%
   filter(sofa_day == 0L) %>%
   select(-sofa_day)
 
-message("Daily pSOFA computed for ", n_distinct(sofa_daily$hospitalization_id), " hospitalizations")
 
-# =============================================================================
 # =============================================================================
 # 3d. Derive eligible post-intubation analysis timepoints
 # =============================================================================
@@ -1704,11 +1676,12 @@ selected_tv_cleaning_checks_table <- tibble(
   passed = as.logical(unlist(selected_tv_cleaning_checks, use.names = FALSE))
 )
 
-message("---- Selected analytic tidal-volume cleaning ----")
-print(selected_tv_thresholds, n = Inf, width = Inf)
-print(selected_tv_cleaning_summary, n = Inf, width = Inf)
-print(selected_tv_cleaning_retention, width = Inf)
-print(selected_tv_cleaning_checks_table, n = Inf, width = Inf)
+if (!isTRUE(all(selected_tv_cleaning_checks_table$passed))) {
+  print(selected_tv_thresholds, n = Inf, width = Inf)
+  print(selected_tv_cleaning_summary, n = Inf, width = Inf)
+  print(selected_tv_cleaning_retention, width = Inf)
+  print(selected_tv_cleaning_checks_table, n = Inf, width = Inf)
+}
 
 stopifnot(isTRUE(all(selected_tv_cleaning_checks_table$passed)))
 
@@ -1772,11 +1745,12 @@ eligible_timepoint_context_checks_table <- tibble(
   passed = as.logical(unlist(eligible_timepoint_context_checks, use.names = FALSE))
 )
 
-message("---- Eligible post-intubation timepoint context ----")
-print(eligible_timepoint_context_qc, width = Inf)
-print(eligible_timepoint_context_source_summary, n = Inf, width = Inf)
-print(eligible_timepoint_method_summary, n = Inf, width = Inf)
-print(eligible_timepoint_context_checks_table, n = Inf, width = Inf)
+if (!isTRUE(all(eligible_timepoint_context_checks_table$passed))) {
+  print(eligible_timepoint_context_qc, width = Inf)
+  print(eligible_timepoint_context_source_summary, n = Inf, width = Inf)
+  print(eligible_timepoint_method_summary, n = Inf, width = Inf)
+  print(eligible_timepoint_context_checks_table, n = Inf, width = Inf)
+}
 
 stopifnot(isTRUE(all(eligible_timepoint_context_checks_table$passed)))
 
@@ -1849,10 +1823,6 @@ analysis_data <- eligible_timepoints %>%
     mp_pfvc = if_else(!is.na(pfvc) & pfvc > 0, mechanical_power / pfvc, NA_real_)
   )
 
-message(
-  "Eligible post-intubation analysis timepoints: ", nrow(analysis_data), " rows across ",
-  n_distinct(analysis_data$hospitalization_id), " hospitalizations"
-)
 
 dp_source_qc <- analysis_data %>%
   count(dp_source_raw, dp_source, dp_type, dp_invalid_reason, name = "n", .drop = FALSE) %>%
@@ -1881,17 +1851,16 @@ dp_derivation_checks <- list(
   valid_dp_matches_raw_dp = all(is.na(analysis_data$dp) | analysis_data$dp == analysis_data$dp_raw)
 )
 
-print(dp_derivation_qc)
-print(dp_source_qc, n = Inf)
+if (!isTRUE(all(unlist(dp_derivation_checks)))) {
+  print(dp_derivation_qc)
+  print(dp_source_qc, n = Inf)
+  print(dp_derivation_checks)
+}
 
 stopifnot(
   isTRUE(all(unlist(dp_derivation_checks)))
 )
 
-message(
-  "Valid driving-pressure source mix: ",
-  paste(capture.output(print(table(analysis_data$dp_source, useNA = "ifany"))), collapse = " | ")
-)
 
 # =============================================================================
 # Norepinephrine-equivalent vasopressor dose
@@ -1968,7 +1937,6 @@ analysis_data <- as_tibble(analysis_ne_joined) %>%
   mutate(ne_equiv_total = coalesce(ne_equiv_total, 0)) %>%
   select(-.analysis_row_id, -join_dttm)
 
-message("NE equivalents joined: ", sum(analysis_data$ne_equiv_total > 0), " timepoints with vasopressors")
 
 # =============================================================================
 # Ventilatory ratio
@@ -2087,8 +2055,6 @@ if (nrow(pco2_data) > 0L) {
     arrange(.analysis_row_id) %>%
     select(-.analysis_row_id, -vr_dttm)
   
-  message("Ventilatory ratio available at ", sum(!is.na(analysis_data$vent_ratio)), " of ",
-          nrow(analysis_data), " timepoints")
 } else {
   analysis_data <- analysis_data %>%
     mutate(
@@ -2292,8 +2258,6 @@ oxygenation_join_integrity_summary <- tibble(
   net_row_count_change = nrow(analysis_with_sf) - nrow(analysis_data)
 )
 
-message("---- Oxygenation joins to IMV timepoints ----")
-print(oxygenation_join_integrity_summary, n = Inf, width = Inf)
 
 oxygenation_timepoint_match_summary <- bind_rows(
   analysis_with_sf %>%
@@ -2447,12 +2411,11 @@ oxygenation_timepoint_match_checks_table <- tibble(
   passed = as.logical(unlist(oxygenation_timepoint_match_checks, use.names = FALSE))
 )
 
-message("---- Oxygenation-to-timepoint nearest-match timing ----")
-print(oxygenation_timepoint_match_summary, n = Inf, width = Inf)
-print(oxygenation_timepoint_match_checks_table, n = Inf, width = Inf)
-
-message("---- Informational: presence of nonexact SF and PF matches ----")
-print(oxygenation_nonexact_match_information, n = Inf, width = Inf)
+if (!isTRUE(all(oxygenation_timepoint_match_checks_table$passed))) {
+  print(oxygenation_timepoint_match_summary, n = Inf, width = Inf)
+  print(oxygenation_timepoint_match_checks_table, n = Inf, width = Inf)
+  print(oxygenation_nonexact_match_information, n = Inf, width = Inf)
+}
 
 stopifnot(isTRUE(all(oxygenation_timepoint_match_checks_table$passed)))
 
@@ -2636,10 +2599,11 @@ psofa_grace_checks_table <- tibble(
   passed = as.logical(unlist(psofa_grace_checks, use.names = FALSE))
 )
 
-message("---- pSOFA matching with pre-admission grace ----")
-print(psofa_timepoint_match_summary, n = Inf, width = Inf)
-print(psofa_grace_summary, width = Inf)
-print(psofa_grace_checks_table, n = Inf, width = Inf)
+if (!isTRUE(all(psofa_grace_checks_table$passed))) {
+  print(psofa_timepoint_match_summary, n = Inf, width = Inf)
+  print(psofa_grace_summary, width = Inf)
+  print(psofa_grace_checks_table, n = Inf, width = Inf)
+}
 
 stopifnot(isTRUE(all(psofa_grace_checks_table$passed)))
 
@@ -2654,6 +2618,7 @@ stopifnot(isTRUE(all(psofa_grace_checks_table$passed)))
 # Eligible pre-admission timepoints within five hours of admission use day-0 pSOFA.
 # Completed oxygenation metrics are matched independently using the closest value within ±5 hours.
 
+message("Script 03 | selecting index cohort and deriving VFD-28")
 analysis_with_completeness <- analysis_with_sf %>%
   mutate(
     is_hypoxemic = case_when(
@@ -2729,14 +2694,8 @@ completeness_failure_summary <- tibble(
   )
 )
 
-message("---- Complete-data gate: timepoint availability ----")
-print(completeness_timepoint_summary, n = Inf, width = Inf)
 
-message("---- Complete-data gate: hospitalization retention ----")
-print(completeness_retention_summary, n = Inf, width = Inf)
 
-message("---- Complete-data gate: nonexclusive failure reasons ----")
-print(completeness_failure_summary, n = Inf, width = Inf)
 
 write_parquet(analysis_with_completeness, file.path(output_dir, "analysis_all_eligible_timepoints.parquet"))
 
@@ -2811,14 +2770,8 @@ hypoxemia_gate_retention_summary <- hypoxemia_gate_by_hospitalization %>%
   mutate(percent = round(100 * n_hospitalizations / sum(n_hospitalizations), 1)) %>%
   arrange(desc(n_hospitalizations))
 
-message("---- Hypoxemia gate: timepoint summary ----")
-print(hypoxemia_gate_timepoint_summary, n = Inf, width = Inf)
 
-message("---- Hypoxemia gate: overlapping criterion counts ----")
-print(hypoxemia_criterion_summary, n = Inf, width = Inf)
 
-message("---- Hypoxemia gate: hospitalization retention ----")
-print(hypoxemia_gate_retention_summary, n = Inf, width = Inf)
 
 # =============================================================================
 # Select one index timepoint per eligible hospitalization
@@ -2919,11 +2872,7 @@ index_selection_tier_summary <- index_selection_by_hospitalization %>%
     .groups = "drop"
   )
 
-message("---- Index-timepoint selection integrity ----")
-print(index_selection_integrity_summary, n = Inf, width = Inf)
 
-message("---- Index-timepoint selection by tier ----")
-print(index_selection_tier_summary, n = Inf, width = Inf)
 
 index_error_measures <- c("Duplicate selected hospitalization IDs",
                           "Qualifying hospitalizations missing an index row",
@@ -2932,6 +2881,8 @@ index_error_measures <- c("Duplicate selected hospitalization IDs",
                           "Selected rows failing the two-tier index rule")
 
 if (any(index_selection_integrity_summary$n[index_selection_integrity_summary$measure %in% index_error_measures] > 0)) {
+  print(index_selection_integrity_summary, n = Inf, width = Inf)
+  print(index_selection_tier_summary, n = Inf, width = Inf)
   stop("The two-tier index-timepoint selection failed an integrity check.")
 }
 
@@ -2986,22 +2937,16 @@ cross_sectional_height_provenance_checks_table <- tibble(
   passed = as.logical(unlist(cross_sectional_height_provenance_checks, use.names = FALSE))
 )
 
-message("---- Cross-sectional height provenance ----")
-print(cross_sectional_height_provenance_summary, n = Inf, width = Inf)
-print(cross_sectional_height_provenance_checks_table, n = Inf, width = Inf)
+if (!isTRUE(all(cross_sectional_height_provenance_checks_table$passed))) {
+  print(cross_sectional_height_provenance_summary, n = Inf, width = Inf)
+  print(cross_sectional_height_provenance_checks_table, n = Inf, width = Inf)
+}
 
 stopifnot(isTRUE(all(cross_sectional_height_provenance_checks_table$passed)))
 
 eligible_patients <- cross_sectional$hospitalization_id
 
-message(
-  "Index selection: ", nrow(index_tier1), " Tier 1 hospitalizations and ", nrow(index_tier2),
-  " Tier 2 hospitalizations"
-)
 
-message(
-  "Index timepoints with driving pressure: ", sum(!is.na(cross_sectional$dp)), " of ", nrow(cross_sectional)
-)
 
 analysis_all <- analysis_with_sf %>%
   filter(hospitalization_id %in% eligible_patients)
@@ -3080,6 +3025,7 @@ vfd_interval_error_measures <- c("Intervals with missing duration", "Intervals w
 if (any(vfd_interval_integrity_summary$n[
   vfd_interval_integrity_summary$measure %in% vfd_interval_error_measures
 ] > 0)) {
+  print(vfd_interval_integrity_summary, n = Inf, width = Inf)
   stop("The VFD respiratory-support intervals failed an integrity check.")
 }
 
@@ -3185,6 +3131,7 @@ vfd_error_measures <- c("Duplicate hospitalization IDs after VFD join", "Rows wi
 if (any(vfd_final_integrity_summary$n[
   vfd_final_integrity_summary$measure %in% vfd_error_measures
 ] > 0)) {
+  print(vfd_final_integrity_summary, n = Inf, width = Inf)
   stop("The final VFD-28 derivation failed an integrity check.")
 }
 
@@ -3200,16 +3147,9 @@ vfd_outcome_status_summary <- cross_sectional %>%
   count(vfd_status, vfd_status_label, name = "n_hospitalizations") %>%
   mutate(percent = round(100 * n_hospitalizations / sum(n_hospitalizations), 1))
 
-message("---- VFD interval integrity ----")
-print(vfd_interval_integrity_summary, n = Inf, width = Inf)
 
-message("---- Final VFD-28 integrity ----")
-print(vfd_final_integrity_summary, n = Inf, width = Inf)
 
-message("---- Final VFD-28 outcome status ----")
-print(vfd_outcome_status_summary, n = Inf, width = Inf)
 
-message("Final-liberation-based median VFD-28: ", round(median(cross_sectional$vfd_28, na.rm = TRUE), 1))
 
 # =============================================================================
 # 3g. VFR terciles
@@ -3291,6 +3231,7 @@ final_output_error_measures <- c("Duplicate cross-sectional hospitalization IDs"
 if (any(final_output_integrity_summary$n[
   final_output_integrity_summary$measure %in% final_output_error_measures
 ] > 0)) {
+  print(final_output_integrity_summary, n = Inf, width = Inf)
   stop("The final analysis output failed at least one integrity check.")
 }
 
@@ -3324,17 +3265,9 @@ final_intubation_method_summary <- cross_sectional %>%
   count(intubation_identification_method, name = "n_hospitalizations") %>%
   mutate(percent = round(100 * n_hospitalizations / sum(n_hospitalizations), 1))
 
-message("---- Final cross-sectional output integrity ----")
-print(final_output_integrity_summary, n = Inf, width = Inf)
 
-message("---- Final cross-sectional variable availability ----")
-print(final_output_variable_availability, n = Inf, width = Inf)
 
-message("---- Final VFR tercile distribution ----")
-print(final_vfr_tercile_summary, n = Inf, width = Inf)
 
-message("---- Final intubation-identification method distribution ----")
-print(final_intubation_method_summary, n = Inf, width = Inf)
 
 # =============================================================================
 # Reconcile the complete Script 03 filtering funnel
@@ -3372,13 +3305,11 @@ script03_filter_reconciliation <- tibble(
     difference = funnel_count - independently_calculated_count
   )
 
-message("---- Complete Script 03 filtering funnel ----")
-print(script03_filter_funnel, n = Inf, width = Inf)
 
-message("---- Script 03 funnel reconciliation ----")
-print(script03_filter_reconciliation, n = Inf, width = Inf)
 
 if (any(!script03_filter_reconciliation$counts_agree)) {
+  print(script03_filter_funnel, n = Inf, width = Inf)
+  print(script03_filter_reconciliation, n = Inf, width = Inf)
   stop("At least one Script 03 filtering count failed reconciliation.")
 }
 
@@ -3386,6 +3317,7 @@ if (any(!script03_filter_reconciliation$counts_agree)) {
 # 3h. Save analysis outputs
 # =============================================================================
 
+message("Script 03 | saving outputs, exports, and diagnostic readback")
 write_parquet(analysis_all, file.path(output_dir, "analysis_all_timepoints.parquet"))
 write_parquet(cross_sectional, file.path(output_dir, "analysis_cross_sectional.parquet"))
 write_parquet(sofa_scores, file.path(output_dir, "sofa_scores.parquet"))
@@ -3474,8 +3406,10 @@ attrition_check_qc <- tibble(
   passed = as.logical(unlist(attrition_checks, use.names = FALSE))
 )
 
-print(attrition, n = Inf, width = Inf)
-print(attrition_check_qc, n = Inf, width = Inf)
+if (!isTRUE(all(attrition_check_qc$passed))) {
+  print(attrition, n = Inf, width = Inf)
+  print(attrition_check_qc, n = Inf, width = Inf)
+}
 
 stopifnot(
   isTRUE(all(attrition_check_qc$passed))
@@ -3510,10 +3444,6 @@ stopifnot(
   attrition_readback_matches
 )
 
-message(
-  "Hospitalization-level attrition log written: ",
-  paste(attrition$n_remaining, collapse = " -> ")
-)
 
 # =============================================================================
 # 3j. Federated PBW:PFVC distribution exports
@@ -3567,7 +3497,6 @@ dist_quantiles <- dist_groups %>%
 write_csv(dist_histograms, file.path(table_dir, paste0("dist_histograms_", site_name, ".csv")))
 write_csv(dist_quantiles, file.path(table_dir, paste0("dist_quantiles_", site_name, ".csv")))
 
-message("Federated distribution exports written for ", nrow(dist_keep), " demographic groups")
 
 # =============================================================================
 # Append concise Script 03 QC to the combined diagnostic RDS
@@ -3771,12 +3700,6 @@ height_bin_coverage_qc <- list(
   checks = height_bin_coverage_checks_table
 )
 
-message(
-  "Height-bin coverage QC passed: ",
-  height_bin_coverage_summary$n_assigned_to_height_bin,
-  " of ", height_bin_coverage_summary$n_hospitalizations,
-  " final hospitalizations assigned."
-)
 
 script03_compact_qc <- list(
   metadata = tibble(
@@ -3933,22 +3856,19 @@ if (!isTRUE(all(unlist(script03_qc_readback_checks)))) {
   stop("The Script 03 QC summary failed its RDS read-back check.")
 }
 
-message("Concise Script 03 QC summary added to: ", diagnostic_rds_path)
-message("Script 03 QC status: ", cohort_diagnostics_check$quality_checks_script03$metadata$overall_status)
+
+if (!isTRUE(overall_script03_qc_passed)) {
+  message("Script 03 QC requires review; diagnostics were retained.")
+  print(script03_qc_summary, n = Inf, width = Inf)
+  print(oxygenation_metric_validity_summary, n = Inf, width = Inf)
+  print(oxygenation_join_integrity_summary, n = Inf, width = Inf)
+}
 
 rm(cohort_diagnostics_check)
 
 # =============================================================================
 # Script 03 completion
 # =============================================================================
-# Diagnostic report rendering is a separate workflow step.
-# The report must consume the saved diagnostic RDS without refitting models.
-# Script 03 does not render, copy, or delete report files.
+# Reporting separately consumes saved diagnostics without refitting models.
 
 message("Script 03 complete.")
-message("  Cross-sectional cohort: ", nrow(cross_sectional), " hospitalizations")
-message("  All retained timepoints: ", nrow(analysis_all))
-message("  Analysis intermediates: ", output_dir)
-message("  CSV deliverables: ", table_dir)
-message("  Combined diagnostic RDS: ", diagnostic_rds_path)
-message("  Diagnostic PDF rendering is deferred to the separate reporting workflow.")

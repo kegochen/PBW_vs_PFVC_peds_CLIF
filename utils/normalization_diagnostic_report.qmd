@@ -14,6 +14,19 @@ format:
   pdf:
     toc: true
     number-sections: true
+    include-in-header:
+      text: |
+        \usepackage{geometry}
+        \usepackage{pdflscape}
+        \newcommand{\BeginDiagnosticLandscape}{%
+          \clearpage
+          \newgeometry{margin=0.5in}%
+          \begin{landscape}%
+        }
+        \newcommand{\EndDiagnosticLandscape}{%
+          \end{landscape}%
+          \restoregeometry
+        }
 execute:
   echo: false
   warning: false
@@ -85,8 +98,15 @@ if (length(missing_sections) > 0L) {
   )
 }
 
-show_table <- function(x, digits = 2, empty_text = "No records to display.", landscape = FALSE,
-                       character_width = "3.2cm") {
+show_table <- function(
+  x,
+  digits = 2,
+  empty_text = "No records to display.",
+  landscape = FALSE,
+  character_width = "3.2cm",
+  landscape_section = FALSE,
+  first_column_width_cm = NULL
+) {
   if (is.null(x)) {
     return(knitr::asis_output("*Diagnostic not available.*\n\n"))
   }
@@ -99,21 +119,53 @@ show_table <- function(x, digits = 2, empty_text = "No records to display.", lan
     return(knitr::asis_output(paste0("*", empty_text, "*\n\n")))
   }
 
-  x <- as_tibble(x)
+  for (flag in list(landscape, landscape_section)) {
+    if (!is.logical(flag) || length(flag) != 1L || is.na(flag)) {
+      stop("Landscape arguments must be TRUE or FALSE.")
+    }
+  }
 
-if (knitr::is_latex_output()) {
-  x <- x %>%
-    mutate(across(where(is.character), ~ if_else(.x == "(Intercept)", "Intercept", .x)))
-}
+  if (!requireNamespace("kableExtra", quietly = TRUE)) {
+    stop("kableExtra is required for diagnostic-report table formatting.")
+  }
 
-long_table <- nrow(x) > 30L
-wide_table <- ncol(x) > 7L
+  x <- tibble::as_tibble(x)
+  latex_output <- knitr::is_latex_output()
+
+  # Retain the existing PDF-only presentation of intercept labels.
+  if (latex_output) {
+    x <- x %>%
+      mutate(across(
+        where(is.character),
+        ~ if_else(.x == "(Intercept)", "Intercept", .x)
+      ))
+  }
+
+  # Display headings only; saved diagnostic column names remain unchanged.
+  heading_labels <- names(x) %>%
+    stringr::str_replace_all(
+      c(
+        "hospitalizations" = "hosp",
+        "hospitalization" = "hosp",
+        "measurements" = "values",
+        "measurement" = "value",
+        "percentage" = "pct",
+        "percent" = "pct",
+        "minimum" = "min",
+        "maximum" = "max"
+      )
+    ) %>%
+    stringr::str_replace_all("_", " ")
+
+  long_table <- nrow(x) > 30L
+  landscape_table <- latex_output && (landscape || landscape_section)
 
   table_output <- knitr::kable(
     x,
+    col.names = heading_labels,
     digits = digits,
-    booktabs = knitr::is_latex_output(),
-    longtable = knitr::is_latex_output() && long_table,
+    booktabs = latex_output,
+    longtable = latex_output && long_table,
     escape = TRUE
   )
 
@@ -128,32 +180,93 @@ wide_table <- ncol(x) > 7L
       kableExtra::scroll_box(width = "100%")
   }
 
-  if (knitr::is_latex_output()) {
-    latex_options <- if (long_table) {
-      c("repeat_header")
-    } else if (wide_table) {
-      c("hold_position", "scale_down")
-    } else {
-      c("hold_position")
-    }
+  if (latex_output) {
+    width_budget_cm <- if (landscape_table) 20 else 13
 
     table_output <- table_output %>%
       kableExtra::kable_styling(
-        latex_options = latex_options,
-        font_size = if (wide_table) 7 else 8,
+        latex_options = if (long_table) "repeat_header" else "hold_position",
+        font_size = if (landscape_table || ncol(x) > 7L) 7 else 8,
         position = "left"
       )
 
-    character_columns <- which(vapply(x, function(column) {
-      is.character(column) || is.factor(column)
-    }, logical(1)))
+    column_weights <- vapply(
+      x,
+      function(column) {
+        if (is.character(column) || is.factor(column)) 2 else 1
+      },
+      numeric(1)
+    )
 
-    for (column_number in character_columns) {
-      table_output <- table_output %>%
-        kableExtra::column_spec(column_number, width = character_width)
+    if (
+      !is.character(character_width) ||
+      length(character_width) != 1L ||
+      is.na(character_width) ||
+      !grepl("^[0-9]+(\\.[0-9]+)?cm$", character_width)
+    ) {
+      stop("character_width must be a positive width expressed in cm.")
     }
 
-    if (landscape) {
+    requested_character_width <- as.numeric(sub("cm$", "", character_width))
+    if (!is.finite(requested_character_width) || requested_character_width <= 0) {
+      stop("character_width must be positive.")
+    }
+
+    if (is.null(first_column_width_cm)) {
+      first_label <- tolower(trimws(heading_labels[[1L]]))
+      first_is_text <- is.character(x[[1L]]) || is.factor(x[[1L]])
+
+      first_column_width_cm <- if (
+        grepl("derivation|filter step|exclusion reason|interpretation", first_label)
+      ) {
+        4.5
+      } else if (grepl("^device$|device category", first_label)) {
+        2.5
+      } else if (!first_is_text) {
+        1.8
+      } else {
+        requested_character_width
+      }
+    }
+
+    if (
+      !is.numeric(first_column_width_cm) ||
+      length(first_column_width_cm) != 1L ||
+      is.na(first_column_width_cm) ||
+      !is.finite(first_column_width_cm) ||
+      first_column_width_cm <= 0 ||
+      first_column_width_cm >= width_budget_cm
+    ) {
+      stop("first_column_width_cm must be positive and below the table budget.")
+    }
+
+    if (ncol(x) == 1L) {
+      column_widths_cm <- first_column_width_cm
+    } else {
+      remaining_weights <- column_weights[-1L]
+      column_widths_cm <- c(
+        first_column_width_cm,
+        (width_budget_cm - first_column_width_cm) *
+          remaining_weights / sum(remaining_weights)
+      )
+    }
+
+    for (column_number in seq_len(ncol(x))) {
+      table_output <- kableExtra::column_spec(
+        table_output,
+        column = column_number,
+        width = paste0(
+          formatC(
+            column_widths_cm[[column_number]],
+            format = "f",
+            digits = 2
+          ),
+          "cm"
+        )
+      )
+    }
+
+    if (landscape_table && !landscape_section) {
       table_output <- kableExtra::landscape(table_output)
     }
   }
@@ -437,6 +550,10 @@ if (length(review_items) == 0L) {
 
 # Input data and analysis frames
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Input-variable availability
 
 ```{r}
@@ -454,7 +571,16 @@ input_report <- normalization_qc$input$variable_summary %>%
     Max = maximum
   )
 
-show_table(input_report, landscape = TRUE)
+show_table(landscape_section = TRUE, input_report, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Upstream derivation validation
@@ -473,13 +599,22 @@ derivation_report <- normalization_qc$derivations %>%
     Passed = passed
   )
 
-show_table(derivation_report, digits = 8, landscape = TRUE)
+show_table(landscape_section = TRUE, derivation_report, digits = 8, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Driving-pressure provenance
 
 ```{r}
-show_table(normalization_qc$driving_pressure, landscape = TRUE)
+show_table(landscape_section = TRUE, normalization_qc$driving_pressure, landscape = FALSE)
 ```
 
 The Script 03 driving-pressure hierarchy uses observed plateau pressure minus set
@@ -488,10 +623,24 @@ above records the pressure-source distribution at this site. PIP-derived
 fallback estimates are not equivalent to plateau-derived static driving
 pressure; interpret the mechanic results in light of their documented sources.
 
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Analysis-frame summary
 
 ```{r}
-show_table(normalization_qc$analysis_frames$summary)
+show_table(landscape_section = TRUE, normalization_qc$analysis_frames$summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Metric-frame exclusions
@@ -507,10 +656,19 @@ gives the numerical ratio between VT/PFVC expressed as percent and VT/PBW
 expressed as mL/kg. This scaling does not imply that 10 kg/L is biologically
 normal or ideal.
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Overall distribution
 
 ```{r}
-show_table(normalization_qc$discordance$overall_summary, digits = 3)
+show_table(landscape_section = TRUE, normalization_qc$discordance$overall_summary, digits = 3)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Exact metric identities
@@ -519,10 +677,19 @@ show_table(normalization_qc$discordance$overall_summary, digits = 3)
 show_table(normalization_qc$discordance$exact_metric_identities, digits = 10)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Demographic model diagnostics
 
 ```{r}
-show_table(normalization_qc$discordance$demographic_model$diagnostics, landscape = TRUE)
+show_table(landscape_section = TRUE, normalization_qc$discordance$demographic_model$diagnostics, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Demographic model coefficients
@@ -540,15 +707,24 @@ discordance_coefficient_report <- normalization_qc$discordance$demographic_model
     N = n_obs
   )
 
-show_table(discordance_coefficient_report, digits = 4, landscape = TRUE)
+show_table(landscape_section = FALSE, discordance_coefficient_report, digits = 4, landscape = FALSE)
 ```
 
 # Continuous-age pattern of PBW/PFVC
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Average log-linear age summary
 
 ```{r}
-show_table(normalization_qc$discordance$age_pattern$linear_summary, digits = 4, landscape = TRUE)
+show_table(landscape_section = TRUE, normalization_qc$discordance$age_pattern$linear_summary, digits = 4, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Linear-versus-spline comparison
@@ -557,36 +733,49 @@ show_table(normalization_qc$discordance$age_pattern$linear_summary, digits = 4, 
 show_table(normalization_qc$discordance$age_pattern$linear_vs_spline_comparison, digits = 4)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Age-model diagnostics
 
 ```{r}
-show_table(normalization_qc$discordance$age_pattern$model_diagnostics, landscape = TRUE)
+show_table(landscape_section = TRUE, normalization_qc$discordance$age_pattern$model_diagnostics, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Demographic heterogeneity
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   normalization_qc$discordance$age_pattern$heterogeneity$coefficient_summary,
   digits = 4,
-  landscape = TRUE
+  landscape = FALSE
 )
 ```
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   normalization_qc$discordance$age_pattern$heterogeneity$model_diagnostics,
-  landscape = TRUE
+  landscape = FALSE
 )
 ```
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   normalization_qc$discordance$age_pattern$heterogeneity$linear_nested_model_comparison,
   digits = 4
 )
 
-show_table(
+show_table(landscape_section = TRUE, 
   normalization_qc$discordance$age_pattern$heterogeneity$spline_nested_model_comparison,
   digits = 4
 )
@@ -597,6 +786,11 @@ allowing a nonlinear age pattern. Interpret it alongside the saved
 linear-versus-spline comparison from the current analysis sample. The linear
 interaction coefficients describe differences in annual log-linear slopes;
 neither comparison establishes causal demographic effects.
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
 
 # Tertile reclassification
 
@@ -610,10 +804,19 @@ thresholds.
 show_table(normalization_qc$reclassification$summary)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Movement between tertiles
 
 ```{r}
-show_table(normalization_qc$reclassification$movement_summary)
+show_table(landscape_section = TRUE, normalization_qc$reclassification$movement_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Tertile counts
@@ -637,6 +840,10 @@ show_table(
 show_table(normalization_qc$reclassification$transition_matrices)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Reclassification versus continuous age
 
 ```{r}
@@ -653,23 +860,28 @@ reclassification_age_model_report <- normalization_qc$reclassification$age_assoc
     `Extreme probabilities` = n_extreme_fitted_probabilities
   )
 
-show_table(reclassification_age_model_report, landscape = TRUE)
+show_table(landscape_section = TRUE, reclassification_age_model_report, landscape = FALSE)
 ```
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   normalization_qc$reclassification$age_association$coefficient_summary,
   digits = 4,
-  landscape = TRUE
+  landscape = FALSE
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Reclassification-curve display status
 
 ```{r}
-show_table(
+show_table(landscape_section = FALSE, 
   normalization_qc$reclassification$age_association$curve_display_status,
-  landscape = TRUE
+  landscape = FALSE
 )
 ```
 
@@ -705,10 +917,23 @@ show_table(
 )
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Method-specific availability and derivation checks
 
 ```{r}
-show_table(descriptive_weight_qc$sample_summary, landscape = TRUE)
+show_table(landscape_section = TRUE, descriptive_weight_qc$sample_summary, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Method-specific tercile reclassification
@@ -720,17 +945,26 @@ thresholds. Results from different method samples are not necessarily paired
 comparisons.
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   descriptive_weight_qc$reclassification$summary,
   digits = 2,
-  landscape = TRUE
+  landscape = FALSE
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Preservation of the original McLaren assignments
 
 ```{r}
 show_table(descriptive_weight_qc$reclassification$mclaren_reconciliation)
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Sex-specific fitted age curves
@@ -745,10 +979,15 @@ or measurements of lung volume. The existing bottom panel of the Part 1b figure
 retains the original McLaren reclassification analysis.
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   descriptive_weight_qc$age_pattern$model_diagnostics,
-  landscape = TRUE
+  landscape = FALSE
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Three-method descriptive checks
@@ -808,13 +1047,22 @@ show_table(alternative_registry_report)
 show_table(normalization_qc$expansion_validation$inventory)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Expanded export-schema validation
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   normalization_qc$expansion_validation$export_schema_validation,
-  landscape = TRUE
+  landscape = FALSE
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Analysis samples
@@ -827,6 +1075,10 @@ show_table(normalization_qc$prognostic_utility$sample_summary)
 
 ```{r}
 show_table(normalization_qc$prognostic_utility$candidate_specifications)
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Candidate-model diagnostics
@@ -850,19 +1102,46 @@ prognostic_model_report <- normalization_qc$prognostic_utility$model_diagnostics
     Status = comparison_status
   )
 
-show_table(prognostic_model_report, landscape = TRUE, character_width = "3.8cm")
+show_table(landscape_section = TRUE, prognostic_model_report, landscape = FALSE, character_width = "3.8cm")
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Family-level comparison status
 
 ```{r}
-show_table(normalization_qc$prognostic_utility$family_status, landscape = TRUE)
+show_table(landscape_section = TRUE, normalization_qc$prognostic_utility$family_status, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Suppression diagnostics
 
 ```{r}
-show_table(normalization_qc$prognostic_utility$suppression_diagnostics, landscape = TRUE)
+show_table(landscape_section = TRUE, normalization_qc$prognostic_utility$suppression_diagnostics, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## AIC and C-statistic comparison
@@ -888,7 +1167,16 @@ prognostic_fit_report <- normalization_qc$prognostic_utility$fit_comparison %>%
     Status = comparison_status
   )
 
-show_table(prognostic_fit_report, digits = 3, landscape = TRUE, character_width = "3.8cm")
+show_table(landscape_section = TRUE, prognostic_fit_report, digits = 3, landscape = FALSE, character_width = "3.8cm")
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Exposure coefficient export
@@ -918,7 +1206,12 @@ prognostic_coefficient_report <- normalization_qc$prognostic_utility$coefficient
     Status = comparison_status
   )
 
-show_table(prognostic_coefficient_report, digits = 3, landscape = TRUE, character_width = "3.7cm")
+show_table(landscape_section = TRUE, prognostic_coefficient_report, digits = 3, landscape = FALSE, character_width = "3.7cm")
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 # Form-versus-physiology decomposition
@@ -927,23 +1220,41 @@ Locked-versus-separate comparisons use nested one-parameter likelihood-ratio
 tests. PBW-versus-PFVC comparisons within a form are nonnested and use AIC
 differences. Positive physiology delta AIC values favor PFVC.
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Results
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   normalization_qc$prognostic_utility$form_vs_physiology$results,
   digits = 4,
-  landscape = TRUE
+  landscape = FALSE
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Sample and nesting validation
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   normalization_qc$prognostic_utility$form_vs_physiology$sample_and_nesting_validation,
-  landscape = TRUE
+  landscape = FALSE
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 # Demographic effect modification
@@ -952,37 +1263,77 @@ A nonsignificant interaction test indicates that effect modification was not
 detected in this analysis. It does not prove demographic invariance or establish
 a universal normalization target.
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Joint interaction tests
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   normalization_qc$prognostic_utility$demographic_effect_modification$results,
   digits = 4,
-  landscape = TRUE
+  landscape = FALSE
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Model-comparison validation
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   normalization_qc$prognostic_utility$demographic_effect_modification$comparison_validation,
-  landscape = TRUE
+  landscape = FALSE
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 # Mechanic modification by age and PFVC
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Analysis samples
 
 ```{r}
-show_table(normalization_qc$mechanic_modification$sample_summary, landscape = TRUE)
+show_table(landscape_section = TRUE, normalization_qc$mechanic_modification$sample_summary, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Centering validation
 
 ```{r}
-show_table(normalization_qc$mechanic_modification$centering_validation, digits = 8, landscape = TRUE)
+show_table(landscape_section = TRUE, normalization_qc$mechanic_modification$centering_validation, digits = 8, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Interaction-ladder summary
@@ -1005,7 +1356,16 @@ ladder_summary_report <- normalization_qc$mechanic_modification$summary %>%
     Status = full_model_status
   )
 
-show_table(ladder_summary_report, digits = 4, landscape = TRUE, character_width = "3.5cm")
+show_table(landscape_section = TRUE, ladder_summary_report, digits = 4, landscape = FALSE, character_width = "3.5cm")
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Nested-comparison diagnostics
@@ -1028,10 +1388,19 @@ ladder_comparison_report <- normalization_qc$mechanic_modification$comparison_di
     Status = comparison_status
   )
 
-show_table(ladder_comparison_report, digits = 4, landscape = TRUE, character_width = "4cm")
+show_table(landscape_section = TRUE, ladder_comparison_report, digits = 4, landscape = FALSE, character_width = "4cm")
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 # Balanced single-modifier models
+
+```{=latex}
+\BeginDiagnosticLandscape
+```
 
 ## Interaction tests
 
@@ -1053,17 +1422,31 @@ single_modifier_report <- normalization_qc$mechanic_modification$single_modifier
     Status = comparison_status
   )
 
-show_table(single_modifier_report, digits = 4, landscape = TRUE)
+show_table(landscape_section = TRUE, single_modifier_report, digits = 4, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Curve-display status
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   normalization_qc$mechanic_modification$single_modifier_curves$status,
   digits = 3,
-  landscape = TRUE
+  landscape = FALSE
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 # Incremental PBW/PFVC information
@@ -1072,20 +1455,42 @@ These one-parameter nested comparisons evaluate PFVC beyond PBW and PBW beyond
 PFVC. Nonsignificance does not establish equivalence or absence of incremental
 information.
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Analysis samples
 
 ```{r}
-show_table(normalization_qc$encompassing_analysis$sample_summary)
+show_table(landscape_section = TRUE, normalization_qc$encompassing_analysis$sample_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Encompassing-model summary
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   normalization_qc$encompassing_analysis$summary,
   digits = 4,
-  landscape = TRUE
+  landscape = FALSE
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Nested-comparison diagnostics
@@ -1106,17 +1511,31 @@ encompassing_comparison_report <- normalization_qc$encompassing_analysis$compari
     Status = comparison_status
   )
 
-show_table(encompassing_comparison_report, digits = 4, landscape = TRUE)
+show_table(landscape_section = TRUE, encompassing_comparison_report, digits = 4, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Collinearity warnings
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   normalization_qc$warnings$encompassing_collinearity,
   digits = 2,
-  landscape = TRUE
+  landscape = FALSE
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 # Validated analysis-output inventory

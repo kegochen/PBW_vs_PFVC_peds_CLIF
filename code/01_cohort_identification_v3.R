@@ -64,7 +64,6 @@ if (!file.exists(attrition_utility_path)) {
 
 source(attrition_utility_path)
 
-# Source-table standardization will be completed separately; paths are configuration-driven.
 
 site_name <- config$site_name
 tables_path <- config$tables_path
@@ -90,8 +89,6 @@ if (length(missing_script01_directories) > 0L) {
 }
 
 message("Script 01 starting | site: ", site_name, " | input format: ", file_type)
-message("Intermediate output directory: ", output_dir)
-message("Cohort diagnostic directory: ", diagnostic_dir)
 
 # =============================================================================
 # Supplemental height source
@@ -129,12 +126,8 @@ supplemental_height_available <- supplemental_height_configured &&
   file.exists(supplemental_height_path) &&
   !dir.exists(supplemental_height_path)
 
-message("Supplemental height source configured: ", supplemental_height_configured)
-message("Supplemental height source available: ", supplemental_height_available)
 
 if (supplemental_height_configured) {
-  message("Supplemental height format: ", supplemental_height_format)
-  message("Supplemental height source: ", supplemental_height_path)
 
   if (!supplemental_height_available) {
     message("Configured supplemental height file unavailable; continuing with clif_vitals alone.")
@@ -204,8 +197,6 @@ table_paths <- vapply(
 
 names(table_paths) <- table_names
 
-message("---- Selected CLIF input files ----")
-walk2(names(table_paths), table_paths, ~ message(.x, ": ", .y))
 
 rm(table_filename_stems)
 
@@ -227,8 +218,8 @@ read_clif_table <- function(path, type) {
   )
 }
 
+message("Script 01 | loading CLIF tables")
 clif_tables <- map(table_paths, read_clif_table, type = file_type)
-walk2(names(clif_tables), clif_tables, ~ message("Loaded ", .x, ": ", nrow(.y), " rows"))
 
 clif_patient <- clif_tables$patient
 clif_hospitalization <- clif_tables$hospitalization
@@ -289,10 +280,8 @@ hospitalization_id_case_qc <- clif_hospitalization %>%
     )
   )
 
-message("---- Hospitalization-ID capitalization QC ----")
-print(hospitalization_id_case_qc, width = Inf)
-
 if (hospitalization_id_case_qc$n_ids_with_core_identity_conflict > 0) {
+  print(hospitalization_id_case_qc, width = Inf)
   stop("At least one normalized hospitalization ID has conflicting patient, admission, discharge, or age information.")
 }
 
@@ -344,8 +333,6 @@ patient_procedure_load_qc <- tibble(
   )
 )
 
-message("---- Patient-procedure table load and linkage ----")
-print(patient_procedure_load_qc, n = Inf, width = Inf)
 
 # -----------------------------------------------------------------------------
 # Standardize equivalent discharge labels
@@ -380,10 +367,6 @@ hospitalization_analysis_conflicts <- clif_hospitalization %>%
       n_ages > 1 | n_discharge_categories > 1
   )
 
-message(
-  "Duplicate hospitalization IDs with conflicts in analysis variables: ",
-  nrow(hospitalization_analysis_conflicts)
-)
 
 if (nrow(hospitalization_analysis_conflicts) > 0L) {
   print(hospitalization_analysis_conflicts %>% slice_head(n = 20), n = 20, width = Inf)
@@ -413,8 +396,6 @@ hospitalization_reconciliation_summary <- tibble(
         sum(duplicated(clif_hospitalization$hospitalization_id)))
 )
 
-message("---- Hospitalization-row reconciliation ----")
-print(hospitalization_reconciliation_summary, n = Inf)
 
 if (anyDuplicated(clif_hospitalization$hospitalization_id)) {
   stop("Hospitalization IDs remain duplicated after reconciliation.")
@@ -442,7 +423,6 @@ duplicate_patient_ids_before_reconciliation <- clif_patient %>%
 
 duplicate_patient_id_values <- duplicate_patient_ids_before_reconciliation$patient_id
 
-message("Patient IDs requiring reconciliation: ", length(duplicate_patient_id_values))
 
 resolve_patient_character <- function(x, conflict_value = NA_character_) {
   values <- as.character(x)
@@ -523,8 +503,6 @@ patient_id_qc <- tibble(
         nrow(duplicate_patient_ids_after_reconciliation))
 )
 
-message("---- Patient-ID QC and reconciliation ----")
-print(patient_id_qc, n = Inf)
 
 if (nrow(duplicate_patient_ids_after_reconciliation) > 0L) {
   stop("Patient IDs remain duplicated after reconciliation.")
@@ -534,6 +512,7 @@ if (nrow(duplicate_patient_ids_after_reconciliation) > 0L) {
 # Identify respiratory intubation anchors independently of procedure evidence
 # =============================================================================
 
+message("Script 01 | identifying respiratory anchors and cohort eligibility")
 required_procedure_columns <- c("hospitalization_id", "procedure_code", "procedure_billed_dttm")
 required_resp_columns <- c("hospitalization_id", "recorded_dttm", "support", ".resp_source_row_id")
 required_adt_columns <- c("hospitalization_id", "location_category", "in_dttm", "out_dttm")
@@ -865,10 +844,11 @@ intubation_identification_checks_table <- tibble(
   passed = as.logical(unlist(intubation_identification_checks, use.names = FALSE))
 )
 
-message("---- Respiratory-anchor identification ----")
-print(intubation_identification_summary, n = Inf, width = Inf)
-print(intubation_identification_method_summary, n = Inf, width = Inf)
-print(intubation_identification_checks_table, n = Inf, width = Inf)
+if (!isTRUE(all(intubation_identification_checks_table$passed))) {
+  print(intubation_identification_summary, n = Inf, width = Inf)
+  print(intubation_identification_method_summary, n = Inf, width = Inf)
+  print(intubation_identification_checks_table, n = Inf, width = Inf)
+}
 
 stopifnot(isTRUE(all(intubation_identification_checks_table$passed)))
 
@@ -1071,8 +1051,9 @@ one_hour_tidal_volume_checks_table <- tibble(
   passed = as.logical(unlist(one_hour_tidal_volume_checks, use.names = FALSE))
 )
 
-message("---- One-hour tidal-volume integrity checks ----")
-print(one_hour_tidal_volume_checks_table, n = Inf, width = Inf)
+if (!isTRUE(all(one_hour_tidal_volume_checks_table$passed))) {
+  print(one_hour_tidal_volume_checks_table, n = Inf, width = Inf)
+}
 
 stopifnot(isTRUE(all(one_hour_tidal_volume_checks_table$passed)))
 
@@ -1092,21 +1073,9 @@ imv_ids <- resp_diagnostic %>%
   filter(has_usable_tidal_volume_within_one_hour) %>%
   pull(hospitalization_id)
 
-message("---- One-hour post-intubation tidal-volume eligibility ----")
-print(
-  intubation_window_event_diagnostic %>%
-    count(event_tidal_volume_status, name = "n_intubation_events"),
-  n = Inf, width = Inf
-)
 
-message("---- One-hour tidal-volume eligibility by identification method ----")
-print(intubation_method_tidal_volume_summary, n = Inf, width = Inf)
 
-message("---- Overlapping intubation-window reconciliation ----")
-print(intubation_window_overlap_summary, n = Inf, width = Inf)
 
-message("---- Tidal-volume source in eligible one-hour rows ----")
-print(tidal_volume_source_summary, n = Inf, width = Inf)
 
 # =============================================================================
 # Summarize ADT eligibility
@@ -1146,7 +1115,6 @@ if (anyDuplicated(eligible_patients) || anyDuplicated(eligible_hospitalizations)
   stop("The selected cohort does not contain exactly one unique hospitalization per patient.")
 }
 
-message("Cohort size: ", length(eligible_hospitalizations), " patients/index hospitalizations")
 
 # -----------------------------------------------------------------------------
 # Restrict post-intubation tidal-volume rows to the selected cohort
@@ -1170,8 +1138,6 @@ post_intubation_output_qc <- tibble(
   )
 )
 
-message("---- Post-intubation tidal-volume output scope ----")
-print(post_intubation_output_qc, n = Inf, width = Inf)
 
 if (any(!post_intubation_tidal_volume_output$hospitalization_id %in% eligible_hospitalizations)) {
   stop("The post-intubation tidal-volume output contains hospitalization IDs outside the selected cohort.")
@@ -1343,18 +1309,8 @@ linkage_summary <- tibble(
                          sum(!icu_ids %in% clif_hospitalization$hospitalization_id))
 )
 
-message("---- One-hour post-intubation tidal-volume event status ----")
-print(
-  intubation_window_event_diagnostic %>%
-    count(event_tidal_volume_status, name = "n_intubation_events"),
-  n = Inf, width = Inf
-)
 
-message("---- Tidal volume among age-eligible hospitalizations ----")
-print(age_eligible_tidal_volume_summary, n = Inf)
 
-message("---- Cumulative cohort filter ----")
-print(cohort_filter_diagnostic, n = Inf)
 
 # =============================================================================
 # Initialize diagnostic RDS object
@@ -1456,16 +1412,15 @@ attrition_step_1_to_3_checks <- list(
   partial_attrition_exclusions_nonnegative = all(attrition$n_excluded[-1] >= 0L)
 )
 
-print(attrition, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(attrition_step_1_to_3_checks)))) {
+  print(attrition, n = Inf, width = Inf)
+  print(attrition_step_1_to_3_checks)
+}
 
 stopifnot(
   isTRUE(all(unlist(attrition_step_1_to_3_checks)))
 )
 
-message(
-  "Attrition steps 1-3, hospitalization level: age=", n_age,
-  ", ICU=", n_icu, ", invasive ventilation=", n_imv
-)
 
 # =============================================================================
 # Run respiratory-support waterfall
@@ -1483,6 +1438,7 @@ resp_support_cohort <- clif_respiratory_support %>%
   filter(hospitalization_id %in% eligible_hospitalizations) %>%
   mutate(recorded_dttm = ymd_hms(recorded_dttm, quiet = TRUE))
 
+message("Script 01 | processing respiratory waterfall and anthropometry")
 waterfall_result <- process_resp_support_waterfall(resp_support_cohort, return_diagnostics = TRUE)
 resp_waterfall <- waterfall_result$data
 waterfall_process_diagnostics <- waterfall_result$diagnostics
@@ -1528,8 +1484,6 @@ waterfall_retention_summary <- waterfall_diagnostic %>%
   count(waterfall_status, name = "n_hospitalizations") %>%
   mutate(percent = round(100 * n_hospitalizations / sum(n_hospitalizations), 1))
 
-message("---- Respiratory-waterfall retention ----")
-print(waterfall_retention_summary, n = Inf)
 
 cohort_diagnostics$waterfall_hospitalization_level <- waterfall_diagnostic
 cohort_diagnostics$waterfall_retention_summary <- waterfall_retention_summary
@@ -1694,15 +1648,15 @@ supplemental_height_checks_table <- tibble(
   passed = as.logical(unlist(supplemental_height_checks, use.names = FALSE))
 )
 
-message("---- Supplemental height source linkage and aggregation ----")
-message("Supplemental height reader status: ", supplemental_height_result$status)
-print(supplemental_height_linkage, n = Inf, width = Inf)
-print(supplemental_height_checks_table, n = Inf, width = Inf)
+if (!isTRUE(all(supplemental_height_checks_table$passed))) {
+  message("Supplemental height reader status: ", supplemental_height_result$status)
+  print(supplemental_height_linkage, n = Inf, width = Inf)
+  print(supplemental_height_checks_table, n = Inf, width = Inf)
+}
 
 stopifnot(isTRUE(all(supplemental_height_checks_table$passed)))
 
-# Local diagnostic detail only; no new export or identifier-copying action.
-# This entry is preserved by the existing complete diagnostic RDS save/read-back.
+# Preserve supplemental row provenance in the complete cohort diagnostic RDS.
 cohort_diagnostics$supplemental_height <- list(
   configuration = list(
     configured = supplemental_height_configured,
@@ -1829,10 +1783,6 @@ if (any(cohort_heights$height_source == "Unavailable")) {
   stop("A retained height row is labelled as unavailable.")
 }
 
-message(
-  "Heights extracted: ", nrow(cohort_heights), " of ",
-  nrow(cohort_patient_and_hospitalization_ids), " hospitalizations"
-)
 
 # =============================================================================
 # QC: height availability, provenance, and source agreement
@@ -1989,32 +1939,24 @@ height_checks_table <- tibble(
   passed = as.logical(unlist(height_checks, use.names = FALSE))
 )
 
-message("---- Height source provenance ----")
-print(height_source_summary, n = Inf, width = Inf)
 
-message("---- Height recovery relative to previous implementation ----")
-print(height_recovery_summary, n = Inf)
 
-message("---- Agreement between height sources at the index hospitalization ----")
-print(height_source_agreement_summary, width = Inf)
 
 if (nrow(height_source_disagreements) > 0L) {
-  message("---- Index-hospitalization source disagreements beyond 5 cm ----")
-  print(height_source_disagreements, n = Inf, width = Inf)
+  message("Script 01 | height-source disagreements flagged; details retained in diagnostics.")
 }
 
 if (supplemental_height_dispersion$n_encounters_with_multiple_values > 0L) {
-  message("---- Within-encounter dispersion in the supplemental source ----")
-  print(supplemental_height_dispersion, width = Inf)
+  message("Script 01 | supplemental-height dispersion assessed; diagnostics retained.")
 }
 
 if (donor_growth_plausibility$n_donor_links_evaluated > 0L) {
-  message("---- Implied growth velocity for admitted cross-encounter heights ----")
-  print(donor_growth_plausibility, width = Inf)
+  message("Script 01 | donor-height growth diagnostics assessed and retained.")
 }
 
-message("---- Height integrity checks ----")
-print(height_checks_table, n = Inf, width = Inf)
+if (!isTRUE(all(height_checks_table$passed))) {
+  print(height_checks_table, n = Inf, width = Inf)
+}
 
 stopifnot(isTRUE(all(height_checks_table$passed)))
 
@@ -2093,9 +2035,6 @@ if (anyDuplicated(cohort_weights$hospitalization_id)) {
   stop("The final weight table contains duplicate hospitalization IDs.")
 }
 
-message(
-  "Weights extracted: ", sum(!is.na(cohort_weights$weight_kg)), " of ", nrow(cohort_weights), " hospitalizations"
-)
 
 # =============================================================================
 # QC: weight availability, imputation, and range
@@ -2128,11 +2067,7 @@ weight_range_summary <- weight_diagnostic %>%
     n_unexpected_processing_loss = sum(weight_status == "Unexpected processing loss")
   )
 
-message("---- Weight availability ----")
-print(weight_summary, n = Inf)
 
-message("---- Weight-range QC ----")
-print(weight_range_summary, width = Inf)
 
 cohort_diagnostics$weight <- list(
   hospitalization_level = weight_diagnostic,
@@ -2179,7 +2114,6 @@ cohort_labs <- clif_labs %>%
   filter(hospitalization_id %in% eligible_hospitalizations, lab_category %in% lab_categories_needed) %>%
   mutate(lab_value_numeric = suppressWarnings(as.numeric(lab_value)))
 
-message("Labs extracted: ", nrow(cohort_labs), " rows")
 
 cohort_meds <- clif_meds %>%
   filter(
@@ -2217,11 +2151,6 @@ if (
   stop("The demographics join did not produce exactly one row per eligible hospitalization.")
 }
 
-message("Demographics: ", nrow(cohort_demographics), " rows")
-message(
-  "Mortality rate: ", round(mean(cohort_demographics$deceased, na.rm = TRUE) * 100, 1), "% (",
-  sum(is.na(cohort_demographics$deceased)), " missing outcome)"
-)
 
 # =============================================================================
 # QC: clinical-data availability
@@ -2302,11 +2231,7 @@ clinical_data_quality_summary <- clinical_data_diagnostic %>%
     n_missing_discharge_category = sum(is.na(discharge_category))
   )
 
-message("---- Clinical-data availability ----")
-print(clinical_data_availability_summary, n = Inf)
 
-message("---- Clinical-data quality ----")
-print(clinical_data_quality_summary, width = Inf)
 
 cohort_diagnostics$clinical_data <- list(
   hospitalization_level = clinical_data_diagnostic,
@@ -2318,6 +2243,7 @@ cohort_diagnostics$clinical_data <- list(
 # Save diagnostics
 # =============================================================================
 
+message("Script 01 | saving diagnostics and intermediate outputs")
 normalization_analysis_diagnostics <- cohort_diagnostics
 
 diagnostic_rds_path <- file.path(diagnostic_dir, "cohort_diagnostics.rds")
@@ -2353,7 +2279,6 @@ if (!identical(diagnostic_readback$height$checks, normalization_analysis_diagnos
   stop("The saved Script 01 height diagnostics failed their read-back check.")
 }
 
-message("Cohort diagnostics saved to: ", diagnostic_rds_path)
 
 rm(diagnostic_readback, vitals_qc, labs_qc, availability_variables)
 
@@ -2463,14 +2388,15 @@ attrition_partial_output_qc <- tibble(
   passed = as.logical(unlist(attrition_partial_output_checks, use.names = FALSE))
 )
 
-print(attrition_partial_readback, n = Inf, width = Inf)
-print(attrition_partial_output_qc, n = Inf, width = Inf)
+if (!isTRUE(all(attrition_partial_output_qc$passed))) {
+  print(attrition_partial_readback, n = Inf, width = Inf)
+  print(attrition_partial_output_qc, n = Inf, width = Inf)
+}
 
 stopifnot(
   isTRUE(all(attrition_partial_output_qc$passed))
 )
 
-message("Partial hospitalization-level attrition log saved to: ", attrition_partial_path)
 
 required_output_files <- c("cohort_hospitalization_ids.rds", "resp_support_waterfall.parquet",
                            "cohort_demographics.parquet", "cohort_vitals.parquet", "cohort_labs.parquet",
@@ -2486,5 +2412,4 @@ if (length(missing_output_files) > 0L) {
   stop("Script 01 failed to create required output(s): ", paste(missing_output_files, collapse = ", "))
 }
 
-message("All intermediates saved to: ", output_dir)
 message("Script 01 complete.")

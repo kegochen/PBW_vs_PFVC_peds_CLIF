@@ -7,17 +7,30 @@ physiology measures.
 
 For a high-level description of the pediatric cohort, analysis workflow,
 outputs, and interpretation limits, see the
-[Executive summary](EXECUTIVE_SUMMARY.md). It describes intended behavior,
-not verified end-to-end execution or an approved study protocol.
+[Executive summary](EXECUTIVE_SUMMARY.md). It describes the implementation,
+locally verified execution status, and remaining validation limits.
+It is not an approved study protocol.
 
 ## Current status
 
-This repository is undergoing refactoring for GitHub-based federated execution.
+This repository supports local single-site execution with shared code
+distributed through GitHub.
 
-Dependency loading and lockfile coverage have been checked in the local Windows
-environment. The refactored pipeline and separate report renderer have not yet
-been executed or validated end to end. Cross-platform dependency restoration
-has not been validated.
+A complete single-session analysis-and-reporting invocation returned
+successfully in the local Windows development environment. Scripts 01–05
+completed sequentially, followed by all three diagnostic reports. The renderer
+validated staged PDFs, published the final PDFs, validated the normalization
+report-inclusive manifest, and read back and synchronized reporting status
+into model QC. All three diagnostic-report layouts were previously visually
+accepted.
+
+The successful invocation used parent-session garbage collection after each
+analysis subprocess returned. Earlier attempts experienced intermittent
+subprocess failures. One successful invocation does not establish that
+garbage collection caused the improvement or guarantee future reliability.
+
+Dependency loading and lockfile coverage have been checked locally.
+Cross-platform dependency restoration remains unvalidated.
 
 Do not interpret code availability, process completion, or computational checks
 as scientific validation, disclosure approval, or authorization to execute.
@@ -73,8 +86,9 @@ and a working TeX installation. Installing the R package `quarto` alone does not
 provide both external prerequisites. The reporting utility does not install
 software.
 
-The development machine has Quarto 1.10.19 and TinyTeX available. Availability
-does not establish successful rendering on that machine or another system.
+The development machine has Quarto 1.10.19 and TinyTeX available.
+All three diagnostic PDFs have rendered successfully in that environment.
+This does not establish successful rendering on another system.
 
 ## Site configuration
 
@@ -181,8 +195,9 @@ Do not invent measurement times.
 
 ## Execution: analysis and reporting are separate
 
-The examples below are for future authorized execution. They must not be run
-during the current no-execution refactoring phase.
+The examples below are for separately authorized local execution.
+Loading definitions, running analysis, and rendering reports are distinct
+actions. Do not rerun a completed workflow merely to inspect its status.
 
 From the repository root, load the runner definitions:
 
@@ -191,6 +206,31 @@ source("code/00_run_pipeline_v3.R")
 ```
 
 Sourcing this file defines functions only. It does not start analysis or reporting.
+
+### Standard end-to-end invocation
+
+Use a fresh RStudio session opened through the repository `.Rproj`, with the
+validated configuration and existing project dependencies. After local
+analysis and reporting execution are authorized, run this block once:
+
+```r
+source("code/00_run_pipeline_v3.R")
+analysis_result <- NULL
+reporting_result <- NULL
+local({
+  analysis_result <<- run_pbwpfvc_analysis()
+  reporting_result <<- run_pbwpfvc_reports()
+})
+```
+
+An analysis error stops the block before reporting starts. Analysis and
+reporting remain separate functions, but the standard block invokes them
+in order within one parent session. A three-session split is not required
+by this standard.
+
+Existing analysis artifacts may be overwritten. Reporting retains its own
+run directory and backups. Do not automatically repeat a failed invocation;
+retain the error and inspect affected artifacts before choosing recovery.
 
 ### Analysis
 
@@ -202,7 +242,11 @@ run_pbwpfvc_analysis()
 
 The runner executes Scripts 01–05 sequentially in separate R processes using
 the project library and base R library. User and system profiles are disabled
-in those child processes.
+in those child processes. After each successful subprocess return, the parent
+R session calls `gc()` before continuing, including before reporting after
+Script 05. This requests collection of unused parent-session R memory; it
+does not remove live analysis objects, guarantee memory release to the
+operating system, or establish the cause of earlier subprocess failures.
 
 The runner stops at the first error. Earlier and partial outputs remain;
 existing analysis artifacts may have been overwritten by the scripts. It does
@@ -310,18 +354,19 @@ assurances.
 
 ## Outstanding validation
 
-Before describing this workflow as execution-ready, complete the remaining
-reviews, including:
+Successful local execution and reporting do not establish portability,
+independent scientific validation, or disclosure clearance.
+Remaining reviews include:
 
-- Shared CLIF schema and timestamp compatibility.
+- Participating-site CLIF schema, units, clinical mappings, and timestamp compatibility.
 - Supplemental measurement-date provenance and source precision.
-- Growth-reference provenance and version.
-- Diagnostic preservation on reruns.
+- Full growth-reference comparison and provenance.
+- Diagnostic preservation across future reruns.
 - Reporting failure paths and recovery behavior.
 - Cross-platform dependency restoration.
-- Authorized end-to-end analysis execution.
-- Authorized PDF rendering and visual inspection.
-- Artifact-specific disclosure review.
+- Reliability across repeated end-to-end invocations and other environments.
+- Review of analysis warning messages not captured in earlier runs.
+- Independent scientific validation and artifact-specific disclosure review.
 
 Study dates, participating sites, sample size, waivers, and access, retention,
 and sharing policies are not specified by this repository.

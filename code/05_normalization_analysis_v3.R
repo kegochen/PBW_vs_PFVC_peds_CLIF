@@ -46,8 +46,8 @@
 #   Existing analysis PDFs under the configured final/figures directory
 #   Detailed normalization diagnostics under local diagnostics/models
 #
-# Diagnostic-report rendering and final report-inclusive manifest integration
-# are being separated from analysis execution. Do not execute during refactoring.
+# Diagnostic-report rendering and report-inclusive manifest validation
+# are separate from analysis execution.
 # =============================================================================
 
 rm(list = ls())
@@ -177,8 +177,6 @@ script04_model_qc_path <- file.path(
 )
 
 message("Script 05 starting | site: ", site_name)
-message("Cross-sectional input: ", cross_sectional_path)
-message("Local normalization diagnostic RDS: ", normalization_analysis_diagnostics_path)
 
 if (!file.exists(cohort_diagnostics_path)) {
   stop("The combined Scripts 01-03 diagnostic RDS was not found: ", cohort_diagnostics_path)
@@ -510,7 +508,10 @@ input_checks <- list(
   mortality_has_nonevents = any(cross_sectional$mortality_event_60 == 0L)
 )
 
-print(input_variable_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(input_checks, use.names = FALSE)))) {
+  print(input_variable_qc, n = Inf, width = Inf)
+  print(input_checks)
+}
 
 stopifnot(isTRUE(all(unlist(input_checks, use.names = FALSE))))
 
@@ -544,7 +545,10 @@ category_coverage_qc <- tibble(
   )
 )
 
-print(category_coverage_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(factor_configuration_checks, use.names = FALSE)))) {
+  print(category_coverage_qc, n = Inf, width = Inf)
+  print(factor_configuration_checks)
+}
 
 stopifnot(isTRUE(all(unlist(factor_configuration_checks, use.names = FALSE))))
 
@@ -664,7 +668,10 @@ derivation_checks <- list(
   derived_variables_consistent = all(derivation_qc$passed)
 )
 
-print(derivation_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(derivation_checks, use.names = FALSE)))) {
+  print(derivation_qc, n = Inf, width = Inf)
+  print(derivation_checks)
+}
 
 stopifnot(isTRUE(all(unlist(derivation_checks, use.names = FALSE))))
 
@@ -695,7 +702,10 @@ dp_checks <- list(
   valid_dp_has_type = dp_qc$n_valid_dp_without_type == 0L
 )
 
-print(dp_qc, width = Inf)
+if (!isTRUE(all(unlist(dp_checks, use.names = FALSE)))) {
+  print(dp_qc, width = Inf)
+  print(dp_checks)
+}
 
 stopifnot(isTRUE(all(unlist(dp_checks, use.names = FALSE))))
 
@@ -750,8 +760,11 @@ frame_checks <- list(
   mp_hospitalization_ids_unique = !anyDuplicated(mp_data$hospitalization_id)
 )
 
-print(analysis_frame_qc, n = Inf, width = Inf)
-print(frame_exclusion_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(frame_checks, use.names = FALSE)))) {
+  print(analysis_frame_qc, n = Inf, width = Inf)
+  print(frame_exclusion_qc, n = Inf, width = Inf)
+  print(frame_checks)
+}
 
 stopifnot(isTRUE(all(unlist(frame_checks, use.names = FALSE))))
 
@@ -797,18 +810,18 @@ normalization_analysis_diagnostics$warnings$initial <- tibble(
   )
 )
 
-print(normalization_analysis_diagnostics$warnings$initial, n = Inf, width = Inf)
+message(
+  "Script 05 | interpretation cautions: PIP-derived driving pressure, ",
+  "sparse mortality events, and selected mechanical-power availability; ",
+  "details retained in normalization diagnostics."
+)
 
 normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
 save_normalization_diagnostics(normalization_analysis_diagnostics)
 
-message(
-  "Analysis frames: PBW/PFVC ", nrow(base), " | DP ", nrow(dp_data),
-  " | Ers ", nrow(ers_data), " | MP ", nrow(mp_data)
-)
+message("Script 05 | deriving descriptive normalization discordance")
 
-message("Initial Script 05 diagnostics saved to: ", normalization_analysis_diagnostics_path)
 
 # Descriptive method comparisons only; these objects do not alter the Part 2 outcome-model frames.
 descriptive_weight_methods <- tribble(
@@ -903,7 +916,10 @@ descriptive_method_checks <- list(
   ))
 )
 
-print(descriptive_method_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(descriptive_method_checks, use.names = FALSE)))) {
+  print(descriptive_method_qc, n = Inf, width = Inf)
+  print(descriptive_method_checks)
+}
 
 stopifnot(isTRUE(all(unlist(descriptive_method_checks, use.names = FALSE))))
 
@@ -1049,10 +1065,13 @@ discordance_checks <- list(
   discordance_demographic_residual_df_positive = disc_model_qc$residual_df > 0L
 )
 
-print(disc_overall, width = Inf)
-print(discordance_identity_qc, n = Inf, width = Inf)
-print(disc_model_qc, width = Inf)
-print(disc_coef, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(discordance_checks, use.names = FALSE)))) {
+  print(disc_overall, width = Inf)
+  print(discordance_identity_qc, n = Inf, width = Inf)
+  print(disc_model_qc, width = Inf)
+  print(disc_coef, n = Inf, width = Inf)
+  print(discordance_checks)
+}
 
 stopifnot(isTRUE(all(unlist(discordance_checks, use.names = FALSE))))
 
@@ -1076,7 +1095,10 @@ discordance_output_checks <- list(
   discordance_outputs_nonempty = all(discordance_output_qc$nonempty)
 )
 
-print(discordance_output_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(discordance_output_checks, use.names = FALSE)))) {
+  print(discordance_output_qc, n = Inf, width = Inf)
+  print(discordance_output_checks)
+}
 
 stopifnot(isTRUE(all(unlist(discordance_output_checks, use.names = FALSE))))
 
@@ -1102,13 +1124,6 @@ normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
 save_normalization_diagnostics(normalization_analysis_diagnostics)
 
-message(
-  "\nPART 1 -- PBW/PFVC conversion factor: median ", round(disc_overall$median, 3), " kg/L",
-  " (IQR ", round(disc_overall$q25, 3), "-", round(disc_overall$q75, 3), "). ",
-  "This corresponds to a median VT/PFVC-to-VT/PBW numerical ratio of ",
-  round(disc_overall$median_vt_scale_ratio, 3), " and an implied VT/PFVC of ",
-  round(disc_overall$median_vtpfvc_at_6_ml_kg, 2), "% at 6 mL/kg PBW."
-)
 
 # =============================================================================
 # Change across cohort-relative metric terciles
@@ -1439,8 +1454,11 @@ descriptive_reclassification_checks <- list(
   )
 )
 
-print(descriptive_reclassification_summary, n = Inf, width = Inf)
-print(descriptive_mclaren_reconciliation, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(descriptive_reclassification_checks, use.names = FALSE)))) {
+  print(descriptive_reclassification_summary, n = Inf, width = Inf)
+  print(descriptive_mclaren_reconciliation, n = Inf, width = Inf)
+  print(descriptive_reclassification_checks)
+}
 
 stopifnot(isTRUE(all(unlist(descriptive_reclassification_checks, use.names = FALSE))))
 
@@ -1504,11 +1522,14 @@ reclassification_checks <- list(
   )
 )
 
-print(recl_tbl, n = Inf, width = Inf)
-print(reclassification_movement_qc, n = Inf, width = Inf)
-print(reclassification_tertile_counts, n = Inf, width = Inf)
-print(reclassification_tied_values, n = Inf, width = Inf)
-print(reclassification_transition_matrices, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(reclassification_checks, use.names = FALSE)))) {
+  print(recl_tbl, n = Inf, width = Inf)
+  print(reclassification_movement_qc, n = Inf, width = Inf)
+  print(reclassification_tertile_counts, n = Inf, width = Inf)
+  print(reclassification_tied_values, n = Inf, width = Inf)
+  print(reclassification_transition_matrices, n = Inf, width = Inf)
+  print(reclassification_checks)
+}
 
 stopifnot(isTRUE(all(unlist(reclassification_checks, use.names = FALSE))))
 
@@ -1561,14 +1582,6 @@ normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
 save_normalization_diagnostics(normalization_analysis_diagnostics)
 
-message("Change across cohort-relative metric terciles when switching PBW to PFVC normalization:")
-
-recl_tbl %>%
-  filter(group_type == "Overall") %>%
-  pwalk(function(metric, pct_reclassified, ...) {
-    message("  ", metric, ": ", round(pct_reclassified, 1), "% reclassified")
-  })
-
 # =============================================================================
 # Part 1 figure: three weight methods and method-specific reclassification
 # =============================================================================
@@ -1609,7 +1622,15 @@ normalization_analysis_diagnostics$warnings$reclassification <- reclassification
     interpretation = "The subgroup percentage is descriptive and may be unstable."
   )
 
-print(normalization_analysis_diagnostics$warnings$reclassification, n = Inf, width = Inf)
+if (nrow(normalization_analysis_diagnostics$warnings$reclassification) > 0L) {
+  message(
+    "Script 05 | reclassification caution: ",
+    nrow(normalization_analysis_diagnostics$warnings$reclassification),
+    " method/metric subgroup summaries have n < ",
+    RECLASSIFICATION_SMALL_GROUP_N,
+    "; unstable percentages and denominators retained in diagnostics."
+  )
+}
 
 PART1_RATIO_DISPLAY_LIMITS <- c(0, 30)
 
@@ -1640,7 +1661,10 @@ part1_ratio_display_checks <- list(
   )
 )
 
-print(part1_ratio_display_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(part1_ratio_display_checks, use.names = FALSE)))) {
+  print(part1_ratio_display_qc, n = Inf, width = Inf)
+  print(part1_ratio_display_checks)
+}
 
 stopifnot(isTRUE(all(unlist(part1_ratio_display_checks, use.names = FALSE))))
 
@@ -1817,7 +1841,10 @@ part1_figure_checks <- list(
   part1_figure_nonempty = part1_figure_qc$nonempty
 )
 
-print(part1_figure_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(part1_figure_checks, use.names = FALSE)))) {
+  print(part1_figure_qc, n = Inf, width = Inf)
+  print(part1_figure_checks)
+}
 
 stopifnot(isTRUE(all(unlist(part1_figure_checks, use.names = FALSE))))
 
@@ -1854,7 +1881,7 @@ normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
 save_normalization_diagnostics(normalization_analysis_diagnostics)
 
-message("Part 1 two-page descriptive figure saved to: ", part1_figure_path)
+message("Script 05 | descriptive figure saved; deriving age patterns")
 
 # =============================================================================
 # PART 1b -- Continuous-age pattern and demographic heterogeneity of PBW/PFVC
@@ -2021,13 +2048,16 @@ discordance_age_checks <- list(
   expected_linear_interaction_terms_exported = nrow(het_tbl) == 3L
 )
 
-print(disc_age_tbl, n = Inf, width = Inf)
-print(disc_age_model_qc, n = Inf, width = Inf)
-print(disc_spl_comparison)
-print(het_tbl, n = Inf, width = Inf)
-print(heterogeneity_model_qc, n = Inf, width = Inf)
-print(het_comparison)
-print(het_spline_comparison)
+if (!isTRUE(all(unlist(discordance_age_checks, use.names = FALSE)))) {
+  print(disc_age_tbl, n = Inf, width = Inf)
+  print(disc_age_model_qc, n = Inf, width = Inf)
+  print(disc_spl_comparison)
+  print(het_tbl, n = Inf, width = Inf)
+  print(heterogeneity_model_qc, n = Inf, width = Inf)
+  print(het_comparison)
+  print(het_spline_comparison)
+  print(discordance_age_checks)
+}
 
 stopifnot(isTRUE(all(unlist(discordance_age_checks, use.names = FALSE))))
 
@@ -2051,7 +2081,10 @@ discordance_age_output_checks <- list(
   discordance_age_outputs_nonempty = all(discordance_age_output_qc$nonempty)
 )
 
-print(discordance_age_output_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(discordance_age_output_checks, use.names = FALSE)))) {
+  print(discordance_age_output_qc, n = Inf, width = Inf)
+  print(discordance_age_output_checks)
+}
 
 stopifnot(isTRUE(all(unlist(discordance_age_output_checks, use.names = FALSE))))
 
@@ -2085,20 +2118,6 @@ normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
 save_normalization_diagnostics(normalization_analysis_diagnostics)
 
-message(
-  "\nPART 1b -- average log-linear PBW/PFVC change per year: ",
-  sprintf(
-    "%+.2f%% (95%% CI %+.2f%% to %+.2f%%; p = %s)",
-    disc_age_tbl$per_year_pct, disc_age_tbl$lo_pct, disc_age_tbl$hi_pct,
-    format.pval(disc_age_tbl$p_value, digits = 3, eps = 0.001)
-  ),
-  ". Linear-versus-spline age comparison: p = ",
-  format.pval(disc_age_tbl$nonlinearity_p, digits = 3, eps = 0.001),
-  ". Demographic heterogeneity: linear-interaction p = ",
-  format.pval(linear_joint_heterogeneity_p, digits = 3, eps = 0.001),
-  "; spline-interaction p = ",
-  format.pval(spline_joint_heterogeneity_p, digits = 3, eps = 0.001), "."
-)
 
 # =============================================================================
 # Cohort-relative tercile change versus continuous age
@@ -2276,9 +2295,12 @@ reclassification_age_checks <- list(
   )
 )
 
-print(recl_age_model_qc, n = Inf, width = Inf)
-print(reclassification_age_sample_qc, n = Inf, width = Inf)
-print(recl_age_tbl, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(reclassification_age_checks, use.names = FALSE)))) {
+  print(recl_age_model_qc, n = Inf, width = Inf)
+  print(reclassification_age_sample_qc, n = Inf, width = Inf)
+  print(recl_age_tbl, n = Inf, width = Inf)
+  print(reclassification_age_checks)
+}
 
 stopifnot(isTRUE(all(unlist(reclassification_age_checks, use.names = FALSE))))
 
@@ -2300,6 +2322,11 @@ reclassification_age_output_checks <- list(
   reclassification_age_output_exists = reclassification_age_output_qc$exists,
   reclassification_age_output_nonempty = reclassification_age_output_qc$nonempty
 )
+
+if (!isTRUE(all(unlist(reclassification_age_output_checks, use.names = FALSE)))) {
+  print(reclassification_age_output_qc, n = Inf, width = Inf)
+  print(reclassification_age_output_checks)
+}
 
 stopifnot(isTRUE(all(unlist(reclassification_age_output_checks, use.names = FALSE))))
 
@@ -2345,8 +2372,18 @@ stopifnot(
   !any(is.na(reclassification_age_warnings$curve_usable))
 )
 
-print(reclassification_age_warnings, n = Inf, width = Inf)
-print(reclassification_age_output_qc, n = Inf, width = Inf)
+if (any(!reclassification_age_warnings$curve_usable)) {
+  message(
+    "Script 05 | reclassification curves suppressed for: ",
+    paste(
+      reclassification_age_warnings$metric[
+        !reclassification_age_warnings$curve_usable
+      ],
+      collapse = "; "
+    ),
+    ". Reasons and model diagnostics retained in the diagnostic RDS."
+  )
+}
 
 normalization_analysis_diagnostics$reclassification$age_association <- list(
   interpretation = paste0(
@@ -2387,17 +2424,6 @@ normalization_analysis_diagnostics$checks <- c(
 normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
 save_normalization_diagnostics(normalization_analysis_diagnostics)
-
-message("\nPART 1b -- adjusted association between age and cohort-relative tercile change:")
-
-recl_age_tbl %>%
-  pwalk(function(metric, reclass_OR_per_year, lo, hi, p_value, ...) {
-    message(
-      "  ", metric, ": OR/year ", sprintf("%.2f", reclass_OR_per_year),
-      " (95% CI ", sprintf("%.2f", lo), "-", sprintf("%.2f", hi),
-      "; p = ", format.pval(p_value, digits = 3, eps = 0.001), ")"
-    )
-  })
 
 # =============================================================================
 # Part 1b figure: nonlinear age pattern and probability of cohort-relative tercile change
@@ -2768,7 +2794,10 @@ part1b_figure_checks <- list(
   part1b_figure_nonempty = part1b_figure_qc$nonempty
 )
 
-print(part1b_figure_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(part1b_figure_checks, use.names = FALSE)))) {
+  print(part1b_figure_qc, n = Inf, width = Inf)
+  print(part1b_figure_checks)
+}
 
 stopifnot(isTRUE(all(unlist(part1b_figure_checks, use.names = FALSE))))
 
@@ -2821,7 +2850,6 @@ normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
 save_normalization_diagnostics(normalization_analysis_diagnostics)
 
-message("Part 1b age-pattern and tercile-change figure saved to: ", part1b_figure_path)
 
 # =============================================================================
 # PART 2 -- Prognostic utility of normalization for 60-day mortality
@@ -2988,7 +3016,10 @@ prognostic_sample_checks <- list(
   ))
 )
 
-print(prognostic_sample_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(prognostic_sample_checks, use.names = FALSE)))) {
+  print(prognostic_sample_qc, n = Inf, width = Inf)
+  print(prognostic_sample_checks)
+}
 
 stopifnot(isTRUE(all(unlist(prognostic_sample_checks, use.names = FALSE))))
 
@@ -3123,6 +3154,7 @@ prognostic_fit_grid <- crossing(
   adjustment = names(adjustment_labels)
 )
 
+message("Script 05 | fitting candidate prognostic models")
 prog_fits <- pmap(
   prognostic_fit_grid,
   function(family, spec, exposure, normalization_spec, adjustment) {
@@ -3382,10 +3414,13 @@ prognostic_model_integrity_checks <- list(
   )
 )
 
-print(prognostic_model_qc, n = Inf, width = Inf)
-print(prognostic_same_rows_qc, n = Inf, width = Inf)
-print(prognostic_cross_specification_rows_qc, n = Inf, width = Inf)
-print(prognostic_family_status, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(prognostic_model_integrity_checks, use.names = FALSE)))) {
+  print(prognostic_model_qc, n = Inf, width = Inf)
+  print(prognostic_same_rows_qc, n = Inf, width = Inf)
+  print(prognostic_cross_specification_rows_qc, n = Inf, width = Inf)
+  print(prognostic_family_status, n = Inf, width = Inf)
+  print(prognostic_model_integrity_checks)
+}
 
 stopifnot(isTRUE(all(unlist(prognostic_model_integrity_checks, use.names = FALSE))))
 
@@ -3510,7 +3545,10 @@ prognostic_influence_checks <- list(
   )))
 )
 
-print(prognostic_influence_summary, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(prognostic_influence_checks, use.names = FALSE)))) {
+  print(prognostic_influence_summary, n = Inf, width = Inf)
+  print(prognostic_influence_checks)
+}
 
 stopifnot(isTRUE(all(unlist(prognostic_influence_checks, use.names = FALSE))))
 
@@ -3581,7 +3619,10 @@ prognostic_suppression_qc <- prog_tbl %>%
     .groups = "drop"
   )
 
-print(prognostic_suppression_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(prognostic_suppression_checks, use.names = FALSE)))) {
+  print(prognostic_suppression_qc, n = Inf, width = Inf)
+  print(prognostic_suppression_checks)
+}
 
 stopifnot(isTRUE(all(unlist(prognostic_suppression_checks, use.names = FALSE))))
 
@@ -3923,8 +3964,11 @@ prognostic_coefficient_checks <- list(
   coefficient_event_counts_positive = all(prog_coefs$n_events > 0L)
 )
 
-print(prognostic_coefficient_diagnostics, n = Inf, width = Inf)
-print(prog_coefs, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(prognostic_coefficient_checks, use.names = FALSE)))) {
+  print(prognostic_coefficient_diagnostics, n = Inf, width = Inf)
+  print(prog_coefs, n = Inf, width = Inf)
+  print(prognostic_coefficient_checks)
+}
 
 stopifnot(isTRUE(all(unlist(prognostic_coefficient_checks, use.names = FALSE))))
 
@@ -3980,31 +4024,6 @@ save_normalization_diagnostics(normalization_analysis_diagnostics)
 # =============================================================================
 # Prognostic-fit summary
 # =============================================================================
-
-message(
-  "\nPART 2 -- exploratory prognostic fit. Lower delta AIC indicates better relative fit within a computationally ",
-  "stable family and adjustment set; sparse events limit statistical interpretation."
-)
-
-prog_tbl %>%
-  arrange(family, normalization_spec, adjustment, delta_aic) %>%
-  pwalk(function(family, normalization_label, spec, adjusted, delta_aic, auc, comparison_status, ...) {
-    if (is.finite(delta_aic) && is.finite(auc)) {
-      message(
-        sprintf(
-          "  [%s | %s | %s] %s: delta AIC = %.1f; C = %.3f; %s",
-          family, normalization_label, adjusted, spec, delta_aic, auc, comparison_status
-        )
-      )
-    } else {
-      message(
-        sprintf(
-          "  [%s | %s | %s] %s: comparison suppressed; %s",
-          family, normalization_label, adjusted, spec, comparison_status
-        )
-      )
-    }
-  })
 
 # =============================================================================
 # Form-versus-physiology decomposition
@@ -4255,8 +4274,11 @@ decomposition_checks <- list(
   )
 )
 
-print(decomp_tbl, n = Inf, width = Inf)
-print(decomposition_model_row_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(decomposition_checks, use.names = FALSE)))) {
+  print(decomp_tbl, n = Inf, width = Inf)
+  print(decomposition_model_row_qc, n = Inf, width = Inf)
+  print(decomposition_checks)
+}
 
 stopifnot(isTRUE(all(unlist(decomposition_checks, use.names = FALSE))))
 
@@ -4304,37 +4326,6 @@ normalization_analysis_diagnostics$checks <- c(
 normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
 save_normalization_diagnostics(normalization_analysis_diagnostics)
-
-message("\nForm-versus-physiology decomposition:")
-
-decomp_tbl %>%
-  arrange(family, normalization_spec, adjustment) %>%
-  pwalk(function(
-    family, normalization_label, adjusted, computationally_usable, comparison_status,
-    form_pbw_lrt_p, form_pfvc_lrt_p, phys_locked_dAIC, phys_separate_dAIC, ...
-  ) {
-    if (computationally_usable) {
-      message(
-        sprintf(
-          paste0(
-            "  [%s | %s | %s] form LRT p, PBW/PFVC = %s / %s; ",
-            "physiology delta AIC, locked/separate = %+.1f / %+.1f; %s"
-          ),
-          family, normalization_label, adjusted,
-          format.pval(form_pbw_lrt_p, digits = 3, eps = 0.001),
-          format.pval(form_pfvc_lrt_p, digits = 3, eps = 0.001),
-          phys_locked_dAIC, phys_separate_dAIC, comparison_status
-        )
-      )
-    } else {
-      message(
-        sprintf(
-          "  [%s | %s | %s] comparison suppressed; %s",
-          family, normalization_label, adjusted, comparison_status
-        )
-      )
-    }
-  })
 
 # =============================================================================
 # Demographic effect modification of locked normalization metrics
@@ -4618,9 +4609,12 @@ demographic_modification_checks <- list(
   )
 )
 
-print(invar_tbl, n = Inf, width = Inf)
-print(demographic_modification_model_qc, n = Inf, width = Inf)
-print(demographic_modification_comparison_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(demographic_modification_checks, use.names = FALSE)))) {
+  print(invar_tbl, n = Inf, width = Inf)
+  print(demographic_modification_model_qc, n = Inf, width = Inf)
+  print(demographic_modification_comparison_qc, n = Inf, width = Inf)
+  print(demographic_modification_checks)
+}
 
 stopifnot(isTRUE(all(unlist(demographic_modification_checks, use.names = FALSE))))
 
@@ -4674,28 +4668,6 @@ normalization_analysis_diagnostics$checks <- c(
 normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
 save_normalization_diagnostics(normalization_analysis_diagnostics)
-
-message("\nDemographic effect modification of locked normalization metrics:")
-
-invar_tbl %>%
-  arrange(normalization_spec, family, normalization) %>%
-  pwalk(function(
-    normalization, normalization_label, computationally_usable, comparison_status, demo_interaction_p, ...
-  ) {
-    if (computationally_usable) {
-      message(
-        "  ", normalization, " | adjustment alternative: ", normalization_label,
-        ": joint interaction p = ",
-        format.pval(demo_interaction_p, digits = 3, eps = 0.001),
-        "; ", comparison_status
-      )
-    } else {
-      message(
-        "  ", normalization, " | adjustment alternative: ", normalization_label,
-        ": test suppressed; ", comparison_status
-      )
-    }
-  })
 
 # =============================================================================
 # Part 2 figure: prognostic fit and discrimination
@@ -4962,9 +4934,12 @@ prognostic_figure_checks <- list(
   prognostic_figure_nonempty = prognostic_figure_qc$nonempty
 )
 
-print(prognostic_plot_data, n = Inf, width = Inf)
-print(prognostic_suppressed_panels, n = Inf, width = Inf)
-print(prognostic_figure_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(prognostic_figure_checks, use.names = FALSE)))) {
+  print(prognostic_plot_data, n = Inf, width = Inf)
+  print(prognostic_suppressed_panels, n = Inf, width = Inf)
+  print(prognostic_figure_qc, n = Inf, width = Inf)
+  print(prognostic_figure_checks)
+}
 
 stopifnot(isTRUE(all(unlist(prognostic_figure_checks, use.names = FALSE))))
 
@@ -4993,7 +4968,6 @@ normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
 save_normalization_diagnostics(normalization_analysis_diagnostics)
 
-message("Exploratory prognostic-fit and apparent-discrimination figure saved to: ", prognostic_figure_path)
 
 # =============================================================================
 # PART 2b -- Modification of the mechanic association by age and predicted FVC
@@ -5069,10 +5043,6 @@ ladder_covariate_checks <- list(
 
 stopifnot(isTRUE(all(unlist(ladder_covariate_checks, use.names = FALSE))))
 
-message(
-  "\nPART 2b: age is modeled continuously in years and centered at ",
-  age_ref, " years."
-)
 
 # Centering makes the mechanic main effect correspond to age 10 and mean log-PFVC. It changes coefficient
 # interpretation but does not alter model fit, likelihood-ratio tests, or fitted values.
@@ -5311,10 +5281,14 @@ ladder_sample_checks <- list(
   )
 )
 
-print(ladder_sample_qc, n = Inf, width = Inf)
-print(ladder_centering_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(ladder_sample_checks, use.names = FALSE)))) {
+  print(ladder_sample_qc, n = Inf, width = Inf)
+  print(ladder_centering_qc, n = Inf, width = Inf)
+  print(ladder_sample_checks)
+}
 
 stopifnot(isTRUE(all(unlist(ladder_sample_checks, use.names = FALSE))))
+
 
 normalization_analysis_diagnostics$mechanic_modification <- list(
   outcome = "60-day mortality",
@@ -5345,6 +5319,7 @@ normalization_analysis_diagnostics$mechanic_modification <- list(
   )
 )
 
+
 normalization_analysis_diagnostics$checks <- c(
   normalization_analysis_diagnostics$checks,
   ladder_covariate_checks,
@@ -5353,7 +5328,9 @@ normalization_analysis_diagnostics$checks <- c(
 
 normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
+message("Script 05 | saving validated interaction-ladder inputs")
 save_normalization_diagnostics(normalization_analysis_diagnostics)
+
 
 # =============================================================================
 # Fit and diagnose the interaction ladders
@@ -5590,6 +5567,7 @@ ladder_fit_grid <- crossing(
   adjustment = names(ladder_adjustment_labels)
 )
 
+message("Script 05 | fitting age/PFVC interaction ladders")
 ladder_fits <- pmap(
   ladder_fit_grid,
   function(family, normalization_spec, adjustment) {
@@ -5753,20 +5731,22 @@ ladder_fit_integrity_checks <- list(
   )
 )
 
-print(
-  ladder_model_qc %>%
-    select(
-      family, normalization_spec, normalization_label, adjustment, adjusted, rung, n_obs, n_events,      
-      n_parameters_excluding_intercept, events_per_parameter,
-      converged, boundary, full_rank, n_extreme_fitted_probabilities,
-      computationally_usable, model_status
-    ),
-  n = Inf,
-  width = Inf
-)
-
-print(ladder_comparison_qc, n = Inf, width = Inf)
-print(ladder_row_validation_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(ladder_fit_integrity_checks, use.names = FALSE)))) {
+  print(
+    ladder_model_qc %>%
+      select(
+        family, normalization_spec, normalization_label, adjustment, adjusted, rung, n_obs, n_events,
+        n_parameters_excluding_intercept, events_per_parameter,
+        converged, boundary, full_rank, n_extreme_fitted_probabilities,
+        computationally_usable, model_status
+      ),
+    n = Inf,
+    width = Inf
+  )
+  print(ladder_comparison_qc, n = Inf, width = Inf)
+  print(ladder_row_validation_qc, n = Inf, width = Inf)
+  print(ladder_fit_integrity_checks)
+}
 
 stopifnot(isTRUE(all(unlist(ladder_fit_integrity_checks, use.names = FALSE))))
 
@@ -5874,7 +5854,10 @@ ladder_output_checks <- list(
   )
 )
 
-print(ladder_tbl, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(ladder_output_checks, use.names = FALSE)))) {
+  print(ladder_tbl, n = Inf, width = Inf)
+  print(ladder_output_checks)
+}
 
 stopifnot(isTRUE(all(unlist(ladder_output_checks, use.names = FALSE))))
 
@@ -5926,28 +5909,6 @@ format_ladder_p <- function(p_value) {
   
   format.pval(p_value, digits = 3, eps = 0.001)
 }
-
-message("\nPART 2b -- nested mechanic-modification tests:")
-
-ladder_tbl %>%
-  arrange(family, normalization_spec, adjustment) %>%
-  pwalk(function(
-    family, normalization_label, adjusted, age_interaction_p, pfvc_x_age_p,
-    size_int_joint_p, size_int_full_p, full_model_status, ...
-  ) {
-    message("\n  ", family, " — ", normalization_label, " — ", adjusted)
-    message("    Mechanic × age: p = ", format_ladder_p(age_interaction_p))
-    message("    PFVC × age: p = ", format_ladder_p(pfvc_x_age_p))
-    message(
-      "    Mechanic × PFVC beyond mechanic × age: p = ",
-      format_ladder_p(size_int_joint_p)
-    )
-    message(
-      "    Mechanic × PFVC beyond both age interactions: p = ",
-      format_ladder_p(size_int_full_p)
-    )
-    message("    Full-model status: ", full_model_status)
-  })
 
 # =============================================================================
 # Balanced single-modifier models
@@ -6193,6 +6154,7 @@ single_modifier_fit_grid <- crossing(
   normalization_spec = normalization_adjustment_specs$normalization_spec
 )
 
+message("Script 05 | fitting balanced single-modifier models")
 single_modifier_fits <- pmap(
   single_modifier_fit_grid,
   function(family, normalization_spec) {
@@ -6327,20 +6289,22 @@ single_modifier_checks <- list(
   )
 )
 
-print(
-  single_modifier_model_qc %>%
-    select(
-      family, normalization_spec, normalization_label, model, n_obs, n_events, n_parameters_excluding_intercept,
-      events_per_parameter, converged, boundary, full_rank,
-      n_extreme_fitted_probabilities, computationally_usable, model_status
-    ),
-  n = Inf,
-  width = Inf
-)
-
-print(single_modifier_diagnostics, n = Inf, width = Inf)
-print(single_modifier_row_qc, n = Inf, width = Inf)
-print(single_modifier_cross_specification_row_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(single_modifier_checks, use.names = FALSE)))) {
+  print(
+    single_modifier_model_qc %>%
+      select(
+        family, normalization_spec, normalization_label, model, n_obs, n_events, n_parameters_excluding_intercept,
+        events_per_parameter, converged, boundary, full_rank,
+        n_extreme_fitted_probabilities, computationally_usable, model_status
+      ),
+    n = Inf,
+    width = Inf
+  )
+  print(single_modifier_diagnostics, n = Inf, width = Inf)
+  print(single_modifier_row_qc, n = Inf, width = Inf)
+  print(single_modifier_cross_specification_row_qc, n = Inf, width = Inf)
+  print(single_modifier_checks)
+}
 
 stopifnot(isTRUE(all(unlist(single_modifier_checks, use.names = FALSE))))
 
@@ -6395,28 +6359,6 @@ normalization_analysis_diagnostics$checks <- c(
 normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
 save_normalization_diagnostics(normalization_analysis_diagnostics)
-
-message("\nBalanced single-modifier interaction tests:")
-
-single_modifier_diagnostics %>%
-  arrange(family, normalization_spec, modifier) %>%
-  pwalk(function(
-    family, normalization_label, modifier, computationally_usable,
-    interaction_lrt_p, comparison_status, ...
-  ) {
-    if (computationally_usable) {
-      message(
-        "  ", family, " | ", normalization_label, " | modifier: ", modifier,
-        ": LRT p = ", format.pval(interaction_lrt_p, digits = 3, eps = 0.001),
-        "; ", comparison_status
-      )
-    } else {
-      message(
-        "  ", family, " | ", normalization_label, " | modifier: ", modifier,
-        ": test suppressed; ", comparison_status
-      )
-    }
-  })
 
 # =============================================================================
 # Balanced single-modifier effect curves
@@ -6815,8 +6757,11 @@ modifier_curve_checks <- list(
   modifier_curve_outputs_nonempty = all(modifier_curve_output_qc$nonempty)
 )
 
-print(modifier_curve_status, n = Inf, width = Inf)
-print(modifier_curve_output_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(modifier_curve_checks, use.names = FALSE)))) {
+  print(modifier_curve_status, n = Inf, width = Inf)
+  print(modifier_curve_output_qc, n = Inf, width = Inf)
+  print(modifier_curve_checks)
+}
 
 stopifnot(isTRUE(all(unlist(modifier_curve_checks, use.names = FALSE))))
 
@@ -6857,7 +6802,6 @@ normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
 save_normalization_diagnostics(normalization_analysis_diagnostics)
 
-message("Balanced single-modifier curve outputs saved.")
 
 # =============================================================================
 # PART 2c -- Incremental information from PBW and PFVC
@@ -7031,7 +6975,10 @@ encompassing_sample_checks <- list(
   ))
 )
 
-print(encompassing_sample_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(encompassing_sample_checks, use.names = FALSE)))) {
+  print(encompassing_sample_qc, n = Inf, width = Inf)
+  print(encompassing_sample_checks)
+}
 
 stopifnot(isTRUE(all(unlist(encompassing_sample_checks, use.names = FALSE))))
 
@@ -7291,6 +7238,7 @@ encompassing_fit_grid <- crossing(
     by = "family"
   )
 
+message("Script 05 | fitting encompassing size-reference models")
 encompassing_fits <- pmap(
   encompassing_fit_grid,
   function(family, normalization_spec, adjustment, mechanic_variable) {
@@ -7462,10 +7410,15 @@ encompassing_fit_checks <- list(
   )
 )
 
-print(encompassing_sample_qc, n = Inf, width = Inf)
-print(encompassing_model_qc, n = Inf, width = Inf)
-print(encompassing_comparison_qc, n = Inf, width = Inf)
-print(encompassing_row_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(encompassing_sample_checks, use.names = FALSE))) ||
+    !isTRUE(all(unlist(encompassing_fit_checks, use.names = FALSE)))) {
+  print(encompassing_sample_qc, n = Inf, width = Inf)
+  print(encompassing_model_qc, n = Inf, width = Inf)
+  print(encompassing_comparison_qc, n = Inf, width = Inf)
+  print(encompassing_row_qc, n = Inf, width = Inf)
+  print(encompassing_sample_checks)
+  print(encompassing_fit_checks)
+}
 
 stopifnot(isTRUE(all(unlist(encompassing_sample_checks, use.names = FALSE))))
 stopifnot(isTRUE(all(unlist(encompassing_fit_checks, use.names = FALSE))))
@@ -7592,7 +7545,10 @@ encompassing_summary_checks <- list(
   )
 )
 
-print(enc_tbl, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(encompassing_summary_checks, use.names = FALSE)))) {
+  print(enc_tbl, n = Inf, width = Inf)
+  print(encompassing_summary_checks)
+}
 
 stopifnot(isTRUE(all(unlist(encompassing_summary_checks, use.names = FALSE))))
 
@@ -7781,7 +7737,10 @@ encompassing_output_checks <- list(
   )) == 0L
 )
 
-print(encompassing_output_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(encompassing_output_checks, use.names = FALSE)))) {
+  print(encompassing_output_qc, n = Inf, width = Inf)
+  print(encompassing_output_checks)
+}
 
 stopifnot(isTRUE(all(unlist(encompassing_output_checks, use.names = FALSE))))
 
@@ -7838,39 +7797,11 @@ normalization_analysis_diagnostics$metadata$updated_at <- Sys.time()
 
 save_normalization_diagnostics(normalization_analysis_diagnostics)
 
-message("\nPART 2c -- incremental size-reference information:")
-
-enc_tbl %>%
-  arrange(family, normalization_spec, adjustment) %>%
-  pwalk(function(
-    family, normalization_label, adjusted, computationally_usable, comparison_status,
-    pfvc_beyond_pbw_p, pbw_beyond_pfvc_p,
-    daic_pfvc_beyond_pbw, daic_pbw_beyond_pfvc, max_vif_both, ...
-  ) {
-    message("\n  ", family, " — ", normalization_label, " — ", adjusted)
-    
-    if (computationally_usable) {
-      message(
-        "    PFVC beyond PBW: p = ",
-        format.pval(pfvc_beyond_pbw_p, digits = 3, eps = 0.001),
-        "; AIC improvement = ", sprintf("%+.2f", daic_pfvc_beyond_pbw)
-      )
-      message(
-        "    PBW beyond PFVC: p = ",
-        format.pval(pbw_beyond_pfvc_p, digits = 3, eps = 0.001),
-        "; AIC improvement = ", sprintf("%+.2f", daic_pbw_beyond_pfvc)
-      )
-      message("    Maximum VIF in both-size model: ", sprintf("%.1f", max_vif_both))
-      message("    Status: ", comparison_status)
-    } else {
-      message("    Comparisons suppressed: ", comparison_status)
-    }
-  })
-
 # =============================================================================
 # Final Script 05 output and diagnostic validation
 # =============================================================================
 
+message("Script 05 | validating outputs and synchronizing diagnostics")
 normalization_expansion_inventory <- tibble(
   component = c(
     "Prognostic models",
@@ -7985,8 +7916,11 @@ normalization_expansion_checks <- list(
   normalization_expansion_export_sites_match = all(normalization_expansion_schema_qc$site_matches)
 )
 
-print(normalization_expansion_inventory, n = Inf, width = Inf)
-print(normalization_expansion_schema_qc, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(normalization_expansion_checks, use.names = FALSE)))) {
+  print(normalization_expansion_inventory, n = Inf, width = Inf)
+  print(normalization_expansion_schema_qc, n = Inf, width = Inf)
+  print(normalization_expansion_checks)
+}
 
 stopifnot(isTRUE(all(unlist(normalization_expansion_checks, use.names = FALSE))))
 
@@ -8030,7 +7964,16 @@ encompassing_collinearity_warnings <- enc_tbl %>%
 
 normalization_analysis_diagnostics$warnings$encompassing_collinearity <- encompassing_collinearity_warnings
 
-print(encompassing_collinearity_warnings, n = Inf, width = Inf)
+if (nrow(encompassing_collinearity_warnings) > 0L) {
+  message(
+    "Script 05 | collinearity caution: ",
+    nrow(encompassing_collinearity_warnings),
+    " encompassing comparison sets have maximum VIF >= ",
+    ENCOMPASSING_VIF_WARNING_THRESHOLD,
+    "; individual size coefficients require caution. ",
+    "Affected sets and VIF values retained in diagnostics."
+  )
+}
 
 mechanical_power_status <- prognostic_model_qc %>%
   filter(family == "Mechanical power") %>%
@@ -8138,7 +8081,10 @@ nonreport_output_checks <- list(
   nonreport_output_paths_unique = !anyDuplicated(normalization_nonreport_outputs$path)
 )
 
-print(normalization_nonreport_outputs, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(nonreport_output_checks, use.names = FALSE)))) {
+  print(normalization_nonreport_outputs, n = Inf, width = Inf)
+  print(nonreport_output_checks)
+}
 
 stopifnot(isTRUE(all(unlist(nonreport_output_checks, use.names = FALSE))))
 
@@ -8201,9 +8147,12 @@ final_output_checks <- list(
   expected_output_type_counts_match = all(observed_output_type_counts$count_matches)
 )
 
-print(normalization_expected_outputs, n = Inf, width = Inf)
-print(observed_output_type_counts, n = Inf)
-print(duplicate_output_paths, n = Inf, width = Inf)
+if (!isTRUE(all(unlist(final_output_checks, use.names = FALSE)))) {
+  print(normalization_expected_outputs, n = Inf, width = Inf)
+  print(observed_output_type_counts, n = Inf)
+  print(duplicate_output_paths, n = Inf, width = Inf)
+  print(final_output_checks)
+}
 
 stopifnot(isTRUE(all(unlist(final_output_checks, use.names = FALSE))))
 
@@ -8303,7 +8252,10 @@ final_diagnostic_check_summary <- tibble(
   passed = vapply(final_diagnostic_checks, isTRUE, logical(1))
 )
 
-print(final_diagnostic_check_summary, n = Inf)
+if (!all(final_diagnostic_check_summary$passed)) {
+  print(final_diagnostic_check_summary, n = Inf)
+}
+
 stopifnot(all(final_diagnostic_check_summary$passed))
 
 normalization_analysis_diagnostics$final_readback_validation <- list(
@@ -8393,19 +8345,11 @@ script05_model_qc_sync_summary <- tibble(
   passed = vapply(script05_model_qc_sync_checks, isTRUE, logical(1))
 )
 
-print(script05_model_qc_sync_summary, n = Inf)
+if (!all(script05_model_qc_sync_summary$passed)) {
+  print(script05_model_qc_sync_summary, n = Inf)
+}
+
 stopifnot(all(script05_model_qc_sync_summary$passed))
 
-message(
-  "Script 05 analysis diagnostics synchronized to: ", script04_model_qc_path,
-  " | section: ", script05_model_qc_section
-)
 
-message("\nScript 05 analysis complete with interpretation warnings; reporting pending.")
-message("  Cross-sectional cohort: ", nrow(cross_sectional), " hospitalizations")
-message("  Sixty-day deaths: ", sum(cross_sectional$mortality_event_60 == 1L))
-message("  Validated analysis files: ", nrow(normalization_expected_outputs))
-message("  CSV artifacts: ", table_dir)
-message("  Analysis figures: ", figure_dir)
-message("  Local diagnostics: ", normalization_analysis_diagnostics_path)
-message("  Intended diagnostic report: ", normalization_analysis_diagnostics$reporting$intended_output)
+message("Script 05 analysis complete; reporting pending.")

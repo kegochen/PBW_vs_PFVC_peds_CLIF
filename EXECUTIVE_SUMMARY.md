@@ -16,13 +16,24 @@ superiority of either normalization method.
 The repository has been refactored for local, single-site execution with shared
 code suitable for distribution through GitHub.
 
-The refactored analysis pipeline and separate report renderer have not yet
-been executed or validated end to end. Dependency loading has been checked
-in the development environment; cross-platform restoration has not been
-validated.
+A complete single-session invocation of Scripts 01–05 followed by diagnostic
+reporting returned successfully in the local Windows development environment.
+The renderer validated and published all three PDFs, validated the
+normalization report-inclusive manifest, and read back and synchronized
+reporting status into model QC. All three diagnostic-report layouts were
+previously visually accepted.
 
-The workflow below describes intended behavior, not verified completed study
-execution. GitHub hosts code and reference material, not site results.
+The successful invocation used parent-session garbage collection between
+analysis subprocesses. Earlier attempts experienced intermittent subprocess
+failures; their cause remains unproved. This success does not establish a
+causal garbage-collection fix or reliability across future invocations.
+
+Dependency loading has been checked locally; cross-platform restoration
+remains unvalidated. Process completion, file integrity, and visual acceptance
+do not establish independent scientific validity or disclosure approval.
+
+The workflow below describes the implementation and its remaining limits.
+GitHub hosts code and reference material, not site results.
 
 ## Cohort and scientific definitions
 
@@ -107,8 +118,16 @@ validation or a preferred clinical normalization policy.
 `code/00_run_pipeline_v3.R` defines an analysis runner and a separate reporting
 runner. Loading that file does not start either workflow.
 
-Analysis scripts execute sequentially in isolated R subprocesses. The runner
-stops at the first failure and retains existing or partial artifacts.
+The standard workflow uses a fresh repository `.Rproj` session and invokes
+analysis followed by reporting in one parent session. See the README for the
+complete execution block; an analysis error prevents reporting from starting.
+
+Analysis scripts execute sequentially in isolated R subprocesses. The parent
+session calls `gc()` after each successful return. The runner stops at the
+first failure and retains existing or partial artifacts; it does not retry
+automatically. Garbage collection does not remove live objects or establish
+the cause of earlier failures.
+
 Dependency restoration is a separate, explicitly approved setup action using
 `renv`; the runner does not install packages.
 
@@ -148,8 +167,14 @@ injury-stage workflows are not implemented in this pediatric repository.
 ## Outstanding decisions and validation
 
 Remaining work includes source precision and provenance review, full growth-file
-comparison, input column/unit compatibility, authorized execution, report
-rendering and visual inspection, and artifact-specific disclosure review.
+comparison, participating-site input column/unit and timestamp compatibility,
+cross-platform dependency restoration, reliability across repeated end-to-end
+invocations, reporting failure-path review, review of uncaptured analysis
+warnings, independent scientific validation, and artifact-specific disclosure
+review.
+
+Local analysis execution and the complete reporting workflow have succeeded;
+these remaining reviews must not be represented as already completed.
 
 Study dates, participating sites, sample size, waivers, and access, retention,
 and sharing policies remain unspecified. This document does not establish

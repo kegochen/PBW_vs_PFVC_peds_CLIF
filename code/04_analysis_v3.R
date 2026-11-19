@@ -19,6 +19,30 @@ library(broom)
 library(algorithmDiagnostics)
 library(EValue)
 
+save_script04_plot <- function(...) {
+  withCallingHandlers(
+    ggplot2::ggsave(...),
+    message = function(condition) {
+      text <- trimws(gsub(
+        "[[:space:]]+", " ", conditionMessage(condition)
+      ))
+
+      routine_message <- text %in% c(
+        "`geom_smooth()` using formula = 'y ~ x'",
+        paste0(
+          "Orientation inferred to be along y-axis; override with ",
+          "`position_quasirandom(orientation = 'x')`"
+        )
+      )
+
+      if (routine_message) {
+        restart <- findRestart("muffleMessage")
+        if (!is.null(restart)) invokeRestart(restart)
+      }
+    }
+  )
+}
+
 # =============================================================================
 # Load validated repository configuration
 # =============================================================================
@@ -392,7 +416,6 @@ script04_input_contract_checks_table <- tibble(
 )
 
 message("---- Script 04 upstream input contract ----")
-print(script04_input_contract_summary, n = Inf, width = Inf)
 
 if (length(missing_cross_sectional_contract_columns) > 0L) {
   message(
@@ -408,7 +431,6 @@ if (length(missing_all_timepoint_contract_columns) > 0L) {
   )
 }
 
-print(script04_input_contract_checks_table, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(script04_input_contract_checks_table$passed)))
 
@@ -434,7 +456,6 @@ pbwpfvc_qc <- cross_sectional %>%
     n_finite = sum(is.finite(pbwpfvc)), pct_missing = 100 * mean(is.na(pbwpfvc))
   )
 
-print(pbwpfvc_qc)
 
 # Restrict Table 1 to patients who can be assigned to a PBW/PFVC tercile.
 n_cross_sectional <- nrow(cross_sectional)
@@ -478,9 +499,6 @@ tercile_ties <- table1_source %>%
   filter(n_terciles > 1L) %>%
   arrange(pbwpfvc)
 
-print(tercile_counts)
-print(tercile_ranges)
-print(tercile_ties, n = Inf)
 
 stopifnot(
   sum(tercile_counts$n) == nrow(table1_source),
@@ -507,8 +525,6 @@ unexpected_race <- table1_source %>%
   distinct(race_category) %>%
   pull(race_category)
 
-print(sex_counts, n = Inf)
-print(race_counts, n = Inf)
 
 stopifnot(length(unexpected_sex) == 0L, length(unexpected_race) == 0L)
 
@@ -532,8 +548,6 @@ mortality_validation <- table1_source %>%
     mortality_percent = 100 * mean(mortality_event_60 == 1, na.rm = TRUE), coding_valid = mortality_coding_valid
   )
 
-print(mortality_counts, n = Inf)
-print(mortality_validation)
 
 stopifnot(mortality_coding_valid)
 
@@ -554,7 +568,6 @@ continuous_qc <- purrr::map_dfr(table1_continuous_vars, function(v) {
   )
 })
 
-print(continuous_qc, n = Inf)
 
 continuous_variables_numeric <- all(purrr::map_lgl(table1_source[table1_continuous_vars], is.numeric))
 continuous_variables_finite <- !any(continuous_qc$n_infinite > 0, na.rm = TRUE)
@@ -597,8 +610,6 @@ mathematical_constraint_checks <- list(
   vfd_28_within_0_to_28 = all(table1_source$vfd_28 >= 0 & table1_source$vfd_28 <= 28, na.rm = TRUE)
 )
 
-print(continuous_range_qc, n = Inf)
-print(mathematical_constraint_checks)
 
 stopifnot(isTRUE(all(unlist(mathematical_constraint_checks))))
 
@@ -662,7 +673,6 @@ derivation_qc <- bind_rows(
   )
 )
 
-print(derivation_qc, n = Inf)
 
 derived_variables_consistent <- nrow(derivation_qc) == 7L && all(derivation_qc$passed)
 
@@ -698,7 +708,6 @@ missingness_by_tercile_reconciles <- all(
   missingness_reconciliation$total_n_matches & missingness_reconciliation$missing_n_matches
 )
 
-print(table1_missingness_by_tercile %>% filter(n_missing > 0L), n = Inf)
 
 stopifnot(missingness_by_tercile_reconciles)
 
@@ -1033,6 +1042,118 @@ save_model_qc <- function(qc, path) {
   qc_readback <- readRDS(path)
   
   if (!identical(qc_readback, qc)) {
+    section_names <- union(names(qc), names(qc_readback))
+    differing_sections <- section_names[
+      !vapply(
+        section_names,
+        function(section) identical(qc[[section]], qc_readback[[section]]),
+        logical(1)
+      )
+    ]
+    
+    comparison <- all.equal(qc_readback, qc)
+    
+    message(
+      "Model-QC differing top-level sections: ",
+      paste(differing_sections, collapse = ", ")
+    )
+    print(comparison)
+    
+    # Inspect the live objects before evidence serialization can normalize them.
+    describe_live_mismatch <- function(expected, observed, label) {
+      if (identical(expected, observed)) {
+        return(invisible(NULL))
+      }
+      
+      message("Live mismatch at: ", label)
+      message(
+        "Types: expected=", typeof(expected),
+        "; readback=", typeof(observed)
+      )
+      message(
+        "Classes: expected=", paste(class(expected), collapse = "/"),
+        "; readback=", paste(class(observed), collapse = "/")
+      )
+      message(
+        "Attributes identical: ",
+        identical(attributes(expected), attributes(observed))
+      )
+      message(
+        "Identical ignoring environment identity: ",
+        identical(expected, observed, ignore.environment = TRUE)
+      )
+      message(
+        "Identical ignoring bytecode: ",
+        identical(expected, observed, ignore.bytecode = TRUE)
+      )
+      
+      print(all.equal(observed, expected, tolerance = 0))
+      
+      if (
+        is.list(expected) && is.list(observed) &&
+        length(expected) == length(observed) &&
+        identical(names(expected), names(observed))
+      ) {
+        for (index in seq_along(expected)) {
+          component <- if (is.null(names(expected))) {
+            as.character(index)
+          } else {
+            names(expected)[[index]]
+          }
+          
+          describe_live_mismatch(
+            expected[[index]],
+            observed[[index]],
+            paste0(label, "$", component)
+          )
+        }
+      }
+    }
+    
+    for (section in differing_sections) {
+      describe_live_mismatch(
+        qc[[section]],
+        qc_readback[[section]],
+        section
+      )
+    }
+    
+    evidence <- list(
+      generated_at = Sys.time(),
+      target_path = path,
+      differing_top_level_sections = differing_sections,
+      comparison = comparison,
+      expected_object = qc,
+      readback_object = qc_readback
+    )
+    
+    evidence_path <- tempfile(
+      pattern = "model_qc_readback_failure_",
+      tmpdir = dirname(path),
+      fileext = ".rds"
+    )
+    
+    evidence_saved <- tryCatch(
+      {
+        saveRDS(evidence, evidence_path, compress = "xz")
+        TRUE
+      },
+      error = function(error) {
+        message(
+          "Could not save model-QC read-back failure evidence: ",
+          conditionMessage(error)
+        )
+        FALSE
+      }
+    )
+    
+    if (evidence_saved) {
+      message(
+        "Model-QC failure evidence written, not independently read-back validated: ",
+        evidence_path
+      )
+    }
+    
     stop("Model QC RDS failed its complete read-back comparison: ", path)
   }
   
@@ -1122,13 +1243,7 @@ model_covariate_checks <- list(
   ] > 0L
 )
 
-print(model_covariate_qc, n = Inf)
-print(model_covariate_complete_cases, n = Inf)
 
-print(tibble(
-  sf10_max_absolute_difference = sf10_max_absolute_difference,
-  sf10_derivation_valid = sf10_derivation_valid
-))
 
 stopifnot(isTRUE(all(unlist(model_covariate_checks))))
 
@@ -1307,11 +1422,6 @@ exposure_checks <- list(
   exposure_labels_match_specifications = identical(names(exposure_specs), names(exposure_labels))
 )
 
-print(exposure_variable_qc, n = Inf)
-print(exposure_specification_qc, n = Inf)
-print(exposure_correlation, n = Inf)
-print(exposure_correlation_long, n = Inf)
-print(tibble(maximum_absolute_exposure_correlation = maximum_absolute_exposure_correlation))
 
 stopifnot(isTRUE(all(unlist(exposure_checks))))
 
@@ -1354,7 +1464,6 @@ mortality_outcome_qc <- tibble(
   has_variation = has_mortality_variation
 )
 
-print(mortality_outcome_qc)
 
 mortality_outcome_checks <- list(
   mortality_outcome_present = mortality_outcome %in% names(cross_sectional),
@@ -1421,8 +1530,6 @@ mortality_sample_checks <- list(
   common_sample_outcome_is_binary = all(mortality_analysis_data[[mortality_outcome]] %in% c(0L, 1L))
 )
 
-print(mortality_sample_qc)
-print(mortality_exclusion_qc, n = Inf)
 
 stopifnot(isTRUE(all(unlist(mortality_sample_checks))))
 
@@ -1571,8 +1678,6 @@ if (has_mortality_variation) {
     dfbeta_values_finite = all(is.finite(mortality_influence_qc$maximum_absolute_dfbeta))
   )
   
-  print(mortality_model_qc, n = Inf)
-  print(mortality_influence_summary, n = Inf, width = Inf)
   
   stopifnot(
     isTRUE(all(unlist(mortality_model_checks))),
@@ -1640,14 +1745,6 @@ if (has_mortality_variation) {
     )
   })
   
-  message("Logistic regression (60-day mortality) — AIC:")
-  
-  purrr::pwalk(
-    mortality_aic_qc,
-    function(model_spec, label, n_obs, n_parameters, log_likelihood, AIC) {
-      message("  ", label, ": ", round(AIC, 1))
-    }
-  )
   
   mortality_table <- tbl_merge(
     mortality_tables, tab_spanner = exposure_labels, quiet = TRUE
@@ -1820,10 +1917,6 @@ continuous_outcome_checks <- list(
   dp_provenance_variables_present = length(missing_dp_provenance_vars) == 0L
 )
 
-print(continuous_outcome_qc, n = Inf, width = Inf)
-print(continuous_sample_qc, n = Inf, width = Inf)
-print(continuous_outcome_constraint_qc, n = Inf)
-print(dp_source_qc, n = Inf)
 
 stopifnot(isTRUE(all(unlist(continuous_outcome_checks))))
 
@@ -1851,7 +1944,7 @@ save_model_qc(model_qc, model_qc_path)
 
 stopifnot(file.exists(model_qc_path), isTRUE(all(unlist(model_qc$checks))))
 
-message("Continuous-outcome QC added to: ", model_qc_path)
+message("Script 04 | continuous-outcome inputs validated")
 
 if (!requireNamespace("sandwich", quietly = TRUE)) {
   stop("The sandwich package is required for HC3 robust standard errors.")
@@ -1924,6 +2017,7 @@ for (outcome_name in names(continuous_outcomes)) {
     n_distinct(analysis_data_outcome[[outcome_var]]) >= 2L
   )
   
+  message("Script 04 | continuous models and tables: ", outcome_name)
   models_for_outcome <- purrr::map(exposure_specs, function(exposure_spec) {
     formula_str <- paste(outcome_var, "~", exposure_spec, "+", covars_used)
     lm(as.formula(formula_str), data = analysis_data_outcome)
@@ -1976,7 +2070,6 @@ for (outcome_name in names(continuous_outcomes)) {
     all_aic_values_finite = all(is.finite(model_qc_for_outcome$AIC))
   )
   
-  print(model_qc_for_outcome, n = Inf, width = Inf)
   
   stopifnot(isTRUE(all(unlist(model_checks_for_outcome))))
   
@@ -1989,17 +2082,20 @@ for (outcome_name in names(continuous_outcomes)) {
       )
   })
   
-  tables_for_outcome <- purrr::map(models_for_outcome, function(model) {
-    tbl_regression(model, tidy_fun = tidy_lm_hc3) %>%
-      modify_table_body(function(table_body) {
-        table_body %>%
-          mutate(
-            replacement_label = unname(continuous_regression_labels[variable]),
-            label = if_else(row_type == "label" & !is.na(replacement_label), replacement_label, label)
-          ) %>%
-          select(-replacement_label)
-      }) %>%
-      bold_p()
+  tables_for_outcome <- purrr::imap(models_for_outcome, function(model, model_name) {
+    regression_table <- tbl_regression(model, tidy_fun = tidy_lm_hc3)
+
+    regression_table <- modify_table_body(regression_table, function(table_body) {
+      table_body %>%
+        mutate(
+          replacement_label = unname(continuous_regression_labels[variable]),
+          label = if_else(row_type == "label" & !is.na(replacement_label), replacement_label, label)
+        ) %>%
+        select(-replacement_label)
+    })
+
+    regression_table <- bold_p(regression_table)
+    regression_table
   })
   
   aic_for_outcome <- model_qc_for_outcome %>%
@@ -2015,15 +2111,6 @@ for (outcome_name in names(continuous_outcomes)) {
   continuous_aic_qc[[outcome_name]] <- aic_for_outcome
   continuous_hc3_qc[[outcome_name]] <- hc3_for_outcome
   
-  message(outcome_label, " models — AIC:")
-  
-  purrr::pwalk(
-    aic_for_outcome,
-    function(outcome_name, outcome_variable, outcome_label, model_spec, exposure_label, n_obs,
-             n_parameters, log_likelihood, AIC) {
-      message("  ", exposure_label, ": ", round(AIC, 1))
-    }
-  )
   
   output_path <- file.path(table_dir, paste0("regression_", outcome_name, "_", site_name, ".html"))
   
@@ -2039,14 +2126,16 @@ for (outcome_name in names(continuous_outcomes)) {
     )
   
   gt::gtsave(continuous_table_gt, output_path)
-  
+
   stopifnot(file.exists(output_path))
+  message("Script 04 | continuous output saved: ", outcome_name)
 }
 
 # =============================================================================
 # Model QC: combined continuous-model results
 # =============================================================================
 
+message("Script 04 | continuous-model loop returned; validating combined results")
 continuous_model_qc_combined <- bind_rows(continuous_model_qc)
 continuous_aic_qc_combined <- bind_rows(continuous_aic_qc)
 continuous_hc3_qc_combined <- bind_rows(continuous_hc3_qc)
@@ -2095,16 +2184,7 @@ continuous_basic_model_checks <- list(
   continuous_model_outputs_nonempty = all(continuous_output_qc$output_nonempty)
 )
 
-print(
-  continuous_model_qc_combined %>%
-    select(
-      outcome_name, outcome_label, model_spec, exposure_label, n_obs, n_parameters, residual_df,
-      full_rank, n_aliased_coefficients, residual_standard_error, r_squared, adjusted_r_squared, AIC
-    ),
-  n = Inf, width = Inf
-)
 
-print(continuous_output_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(continuous_basic_model_checks))))
 
@@ -2276,21 +2356,7 @@ continuous_diagnostic_summary <- continuous_diagnostic_flags %>%
     n_with_high_leverage = sum(high_leverage_observations_present), .groups = "drop"
   )
 
-print(
-  continuous_residual_qc %>%
-    select(
-      outcome_name, outcome_label, model_spec, exposure_label, n_obs,
-      residual_skewness, residual_excess_kurtosis, shapiro_p_value,
-      breusch_pagan_p_value, reset_p_value,
-      maximum_absolute_studentized_residual, n_absolute_studentized_residual_gt_3,
-      maximum_cooks_distance, n_cooks_distance_above_threshold,
-      maximum_leverage, n_leverage_above_threshold
-    ),
-  n = Inf, width = Inf
-)
 
-print(continuous_diagnostic_summary, n = Inf, width = Inf)
-print(continuous_influence_summary, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(continuous_residual_checks))))
 
@@ -2446,18 +2512,7 @@ log_diagnostic_comparison <- continuous_residual_qc %>%
     by = c("outcome_name", "model_spec")
   )
 
-print(log_sensitivity_sample_qc, n = Inf, width = Inf)
-print(log_diagnostic_comparison, n = Inf, width = Inf)
 
-print(
-  log_sensitivity_results_combined %>%
-    filter(term %in% exposure_vars) %>%
-    select(
-      outcome_name, model_spec, exposure_label, term, estimate, conf.low, conf.high, p.value,
-      percent_change, percent_change_conf_low, percent_change_conf_high
-    ),
-  n = Inf, width = Inf
-)
 
 stopifnot(isTRUE(all(unlist(log_sensitivity_checks))))
 
@@ -2526,8 +2581,6 @@ vfd_outcome_checks <- list(
   competing_deaths_present = vfd_outcome_qc$n_death > 0L
 )
 
-print(vfd_outcome_qc)
-print(tibble(vfd_status_values = vfd_status_values))
 
 stopifnot(isTRUE(all(unlist(vfd_outcome_checks))))
 
@@ -2573,8 +2626,6 @@ vfd_sample_checks <- list(
   vfd_source_rows_unique = !anyDuplicated(vfd_analysis_data$.source_row)
 )
 
-print(vfd_sample_qc)
-print(vfd_sample_by_status_qc, n = Inf)
 
 # Audit censoring times among patients without documented successful liberation or death.
 vfd_censoring_qc <- cross_sectional %>%
@@ -2625,9 +2676,6 @@ vfd_censoring_checks <- list(
   )
 )
 
-print(vfd_censoring_qc)
-print(vfd_censoring_time_distribution, n = Inf)
-print(vfd_analysis_censoring_qc)
 
 stopifnot(
   isTRUE(all(unlist(vfd_outcome_checks))),
@@ -2728,7 +2776,6 @@ vfd_model_checks <- list(
   vfd_aic_values_finite = all(is.finite(vfd_model_qc$AIC))
 )
 
-print(vfd_model_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(vfd_model_checks))))
 
@@ -2762,12 +2809,6 @@ vfd_cr_tables <- purrr::map(vfd_cr_models, function(model) {
     bold_p()
 })
 
-message("28-day VFDs (Fine-Gray, liberation SHR) — AIC:")
-
-purrr::iwalk(
-  vfd_cr_models,
-  ~ message("  ", exposure_labels[.y], ": ", round(AIC(.x), 1))
-)
 
 vfd_table <- tbl_merge(vfd_cr_tables, tab_spanner = exposure_labels, quiet = TRUE) %>%
   modify_caption(paste0("**Fine–Gray regression models for successful liberation by day 28 — ", site_name, "**"))
@@ -2874,8 +2915,6 @@ vfd_zph_checks <- list(
   vfd_zph_p_values_valid = all(vfd_zph_qc$p_value >= 0 & vfd_zph_qc$p_value <= 1)
 )
 
-print(vfd_zph_qc, n = Inf, width = Inf)
-print(vfd_zph_summary, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(vfd_zph_checks))))
 
@@ -2998,8 +3037,6 @@ aic_input_checks <- list(
   exactly_one_reference_model_per_outcome = all(aic_outcome_qc$n_reference_models == 1L)
 )
 
-print(aic_input_qc, n = Inf, width = Inf)
-print(aic_outcome_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(aic_input_checks))))
 
@@ -3085,8 +3122,6 @@ aic_evidence_ratio_checks <- list(
   truncated_evidence_ratios_within_limits = all(aic_evidence_ratio_qc$all_truncated_ratios_within_limits)
 )
 
-print(aic_all, n = Inf, width = Inf)
-print(aic_evidence_ratio_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(aic_evidence_ratio_checks))))
 
@@ -3160,7 +3195,7 @@ aic_output_path <- file.path(table_dir, paste0("aic_comparison_all_", site_name,
 er_heatmap_output_path <- file.path(figure_dir,paste0("evidence_ratio_heatmap_all_", site_name, ".pdf"))
 
 write_csv(aic_all, aic_output_path)
-ggsave(er_heatmap_output_path, er_heatmap, width = 10, height = 13)
+save_script04_plot(er_heatmap_output_path, er_heatmap, width = 10, height = 13)
 
 aic_output_checks <- list(
   aic_csv_exists = file.exists(aic_output_path),
@@ -3267,8 +3302,6 @@ survival_endpoint_checks <- list(
     sum(cross_sectional$mortality_event_60 == 1L, na.rm = TRUE)
 )
 
-print(survival_endpoint_qc, width = Inf)
-print(survival_time_by_status_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(survival_endpoint_checks))))
 
@@ -3366,8 +3399,6 @@ cox_sample_checks <- list(
   cox_source_rows_unique = !anyDuplicated(cox_analysis_data$.source_row)
 )
 
-print(cox_sample_qc, width = Inf)
-print(cox_sample_by_status_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(cox_sample_checks))))
 
@@ -3472,7 +3503,6 @@ cox_model_checks <- list(
   cox_aic_values_finite = all(is.finite(cox_model_qc$AIC))
 )
 
-print(cox_model_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(cox_model_checks))))
 
@@ -3536,8 +3566,6 @@ cox_zph_checks <- list(
   cox_zph_p_values_valid = all(cox_zph_qc$p_value >= 0 & cox_zph_qc$p_value <= 1)
 )
 
-print(cox_zph_qc, n = Inf, width = Inf)
-print(cox_zph_summary, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(cox_zph_checks))))
 
@@ -3582,7 +3610,6 @@ cox_race_stratum_checks <- list(
   at_least_two_race_strata_present = nrow(cox_race_stratum_qc) >= 2L
 )
 
-print(cox_race_stratum_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(cox_race_stratum_checks))))
 
@@ -3650,7 +3677,6 @@ cox_race_stratified_checks <- list(
   race_stratified_aic_values_finite = all(is.finite(cox_race_stratified_qc$AIC))
 )
 
-print(cox_race_stratified_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(cox_race_stratified_checks))))
 
@@ -3719,7 +3745,6 @@ cox_race_stratified_comparison_checks <- list(
   hazard_ratio_comparisons_finite = all(is.finite(cox_race_stratified_comparison$ratio_of_hazard_ratios))
 )
 
-print(cox_race_stratified_comparison, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(cox_race_stratified_comparison_checks))))
 
@@ -3776,8 +3801,6 @@ cox_race_stratified_zph_checks <- list(
   )
 )
 
-print(cox_race_stratified_zph_qc, n = Inf, width = Inf)
-print(cox_race_stratified_zph_summary, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(cox_race_stratified_zph_checks))))
 
@@ -4040,7 +4063,7 @@ km_results <- purrr::imap(km_ratio_specs, function(spec, method_name) {
     stop("The arranged Kaplan-Meier page is not a drawable grid object.")
   }
   
-  ggplot2::ggsave(
+  save_script04_plot(
     filename = output_path, plot = km_arranged_plot[[1L]],
     device = "pdf", width = 10, height = 8, units = "in", bg = "white"
   )
@@ -4139,10 +4162,6 @@ km_checks_table <- purrr::imap_dfr(km_results, function(result, method_name) {
     )
 })
 
-print(km_sample_qc, n = Inf, width = Inf)
-print(km_method_summary, n = Inf, width = Inf)
-print(km_logrank_qc, n = Inf, width = Inf)
-print(km_output_qc, n = Inf, width = Inf)
 
 stopifnot(
   nrow(km_sample_qc) == 3L,
@@ -4358,8 +4377,6 @@ demo_input_checks <- list(
   )
 )
 
-print(demo_input_qc, n = Inf, width = Inf)
-print(demo_standardization_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(demo_input_checks))))
 
@@ -4504,8 +4521,6 @@ demo_model_checks <- list(
   demographic_models_have_nonempty_samples = all(demo_model_qc$n_obs > 0L)
 )
 
-print(demo_model_qc, n = Inf, width = Inf)
-print(demo_model_sample_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(demo_model_checks))))
 
@@ -4722,8 +4737,6 @@ broad_pfvc_input_checks <- list(
   broad_pfvc_source_rows_unique = !anyDuplicated(broad_pfvc_analysis_data$.source_row)
 )
 
-print(broad_pfvc_input_qc, n = Inf, width = Inf)
-print(broad_pfvc_sample_qc, width = Inf)
 
 stopifnot(isTRUE(all(unlist(broad_pfvc_input_checks))))
 
@@ -4838,7 +4851,6 @@ pfvc_vs_weight_checks <- list(
   )))
 )
 
-print(pfvc_vs_weight_model_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(pfvc_vs_weight_checks))))
 
@@ -4922,8 +4934,6 @@ pfvc_vs_pbw_diagnostic_flags <- tibble(
   high_leverage_observations_present = pfvc_vs_pbw_model_qc$n_leverage_above_threshold > 0L
 )
 
-print(pfvc_vs_pbw_model_qc, width = Inf)
-print(pfvc_vs_pbw_diagnostic_flags, width = Inf)
 
 stopifnot(isTRUE(all(unlist(pfvc_vs_pbw_model_checks))))
 
@@ -5211,9 +5221,6 @@ pfvc_vs_pbw_spline_checks <- list(
   )))
 )
 
-print(pfvc_vs_pbw_spline_qc, width = Inf)
-print(pfvc_vs_pbw_model_comparison, n = Inf, width = Inf)
-print(pfvc_vs_pbw_nested_comparison, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(pfvc_vs_pbw_spline_checks))))
 
@@ -5342,8 +5349,6 @@ pfvc_vs_pbw_interaction_checks <- list(
   )))
 )
 
-print(pfvc_vs_pbw_interaction_qc, width = Inf)
-print(pfvc_vs_pbw_interaction_comparison, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(pfvc_vs_pbw_interaction_checks))))
 
@@ -5554,11 +5559,6 @@ primary_results_checks <- list(
     pull(valid)
 )
 
-print(
-  primary_results_qc %>%
-    count(analysis, model_family, adjustment, n_obs, name = "n_result_rows"),
-  n = Inf, width = Inf
-)
 
 stopifnot(isTRUE(all(unlist(primary_results_checks))))
 
@@ -5679,7 +5679,6 @@ if (!is.null(mortality_models)) {
     )
   )
   
-  print(mortality_minimal_qc, n = Inf, width = Inf)
   
   stopifnot(isTRUE(all(unlist(mortality_minimal_checks))))
   
@@ -5855,11 +5854,6 @@ continuous_minimal_checks <- list(
   )))
 )
 
-print(
-  continuous_minimal_model_qc %>%
-    count(outcome_name, outcome_label, n_obs, name = "n_models"),
-  n = Inf, width = Inf
-)
 
 stopifnot(isTRUE(all(unlist(continuous_minimal_checks))))
 
@@ -5919,7 +5913,6 @@ vfd_minimal_checks <- list(
   )
 )
 
-print(vfd_minimal_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(vfd_minimal_checks))))
 
@@ -6038,7 +6031,6 @@ if (length(cox_models) == 4L) {
     minimally_adjusted_cox_aic_values_finite = all(is.finite(cox_minimal_qc$AIC))
   )
   
-  print(cox_minimal_qc, n = Inf, width = Inf)
   
   stopifnot(isTRUE(all(unlist(cox_minimal_checks))))
   
@@ -6172,22 +6164,20 @@ unified_results_checks <- list(
     regression_results_long$adjustment %in% c("adjusted", "minimally adjusted")
   ),
   unified_results_have_no_duplicate_keys = nrow(unified_results_duplicate_qc) == 0L,
-  mortality_formulas_use_60_day_outcome = regression_results_long %>%
+  unified_mortality_formulas_use_60_day_outcome = regression_results_long %>%
     filter(analysis == "Mortality") %>%
     summarise(valid = all(str_detect(formula, fixed("mortality_event_60")))) %>%
     pull(valid),
-  finegray_sample_sizes_are_patient_counts = regression_results_long %>%
+  unified_finegray_sample_sizes_are_patient_counts = regression_results_long %>%
     filter(model_family == "finegray") %>%
     summarise(valid = all(n_obs == nrow(vfd_analysis_data))) %>%
     pull(valid),
-  cox_sample_sizes_are_patient_counts = regression_results_long %>%
+  unified_cox_sample_sizes_are_patient_counts = regression_results_long %>%
     filter(model_family == "cox") %>%
     summarise(valid = all(n_obs == nrow(cox_analysis_data))) %>%
     pull(valid)
 )
 
-print(unified_results_group_qc, n = Inf, width = Inf)
-print(unified_results_duplicate_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(unified_results_checks))))
 
@@ -6667,9 +6657,6 @@ spline_age_model_checks <- list(
   finegray_spline_robust_standard_errors_finite = all(vfd_spline_qc$robust_standard_errors_finite)
 )
 
-print(mortality_spline_qc, n = Inf, width = Inf)
-print(cox_spline_qc, n = Inf, width = Inf)
-print(vfd_spline_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(spline_age_model_checks))))
 
@@ -6784,8 +6771,6 @@ residual_confounding_checks <- list(
   residual_confounding_has_no_duplicate_keys = nrow(residual_confounding_duplicate_qc) == 0L
 )
 
-print(residual_confounding_qc, n = Inf, width = Inf)
-print(residual_confounding_duplicate_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(residual_confounding_checks))))
 
@@ -7001,9 +6986,6 @@ conditional_bias_input_checks <- list(
   conditional_bias_mortality_has_variation = n_distinct(diag_data$mortality_event_60, na.rm = TRUE) == 2L
 )
 
-print(conditional_bias_variable_qc, n = Inf, width = Inf)
-print(conditional_bias_group_qc, n = Inf, width = Inf)
-print(conditional_bias_mortality_qc, n = Inf)
 
 stopifnot(isTRUE(all(unlist(conditional_bias_input_checks))))
 
@@ -7036,7 +7018,7 @@ bias_pbw_pfvc <- conditional_bias_plot(
 )
 
 bias_pbw_pfvc_path <- file.path(figure_dir, paste0("bias_pbw_vs_pfvc_", site_name, ".pdf"))
-ggsave(bias_pbw_pfvc_path, bias_pbw_pfvc, width = 14, height = 12)
+save_script04_plot(bias_pbw_pfvc_path, bias_pbw_pfvc, width = 14, height = 12)
 
 # Plot 2: 60-day mortality by VT/PFVC, VT/PBW, and PBW/PFVC, stratified by demographics.
 bias_mortality <- conditional_bias_plot(
@@ -7059,7 +7041,7 @@ bias_mortality <- conditional_bias_plot(
 )
 
 bias_mortality_path <- file.path(figure_dir, paste0("bias_mortality_", site_name, ".pdf"))
-ggsave(bias_mortality_path, bias_mortality, width = 14, height = 18)
+save_script04_plot(bias_mortality_path, bias_mortality, width = 14, height = 18)
 
 # Plot 3: Elastance by exposures, stratified by demographics.
 bias_ers <- conditional_bias_plot(
@@ -7075,7 +7057,7 @@ bias_ers <- conditional_bias_plot(
 )
 
 bias_ers_path <- file.path(figure_dir, paste0("bias_elastance_", site_name, ".pdf"))
-ggsave(bias_ers_path, bias_ers, width = 14, height = 18)
+save_script04_plot(bias_ers_path, bias_ers, width = 14, height = 18)
 
 message("Elastance bias plots saved")
 
@@ -7091,7 +7073,7 @@ bias_crs <- conditional_bias_plot(
 )
 
 bias_crs_path <- file.path(figure_dir, paste0("bias_compliance_", site_name, ".pdf"))
-ggsave(bias_crs_path, bias_crs, width = 14, height = 18)
+save_script04_plot(bias_crs_path, bias_crs, width = 14, height = 18)
 
 message("Compliance bias plots saved")
 
@@ -7111,7 +7093,7 @@ bias_vfd <- conditional_bias_plot(
 )
 
 bias_vfd_path <- file.path(figure_dir, paste0("bias_vfd28_", site_name, ".pdf"))
-ggsave(bias_vfd_path, bias_vfd, width = 14, height = 18)
+save_script04_plot(bias_vfd_path, bias_vfd, width = 14, height = 18)
 
 # Plot 6a: McLaren PBW/PFVC ratio by demographics.
 bias_mclaren_pfvc <- conditional_bias_plot(
@@ -7128,7 +7110,7 @@ bias_mclaren_pfvc_path <- file.path(
   paste0("bias_mclaren_pbwpfvc_ratio_", site_name, ".pdf")
 )
 
-ggsave(bias_mclaren_pfvc_path, bias_mclaren_pfvc, width = 14, height = 18)
+save_script04_plot(bias_mclaren_pfvc_path, bias_mclaren_pfvc, width = 14, height = 18)
 
 # Plot 6b: NCHS weight/PFVC ratio by demographics.
 bias_nchs_pfvc <- conditional_bias_plot(
@@ -7145,7 +7127,7 @@ bias_nchs_pfvc_path <- file.path(
   paste0("bias_nchs_weight_pfvc_ratio_", site_name, ".pdf")
 )
 
-ggsave(bias_nchs_pfvc_path, bias_nchs_pfvc, width = 14, height = 18)
+save_script04_plot(bias_nchs_pfvc_path, bias_nchs_pfvc, width = 14, height = 18)
 
 # Plot 6c: ABW/PFVC ratio by demographics.
 bias_abw_pfvc <- conditional_bias_plot(
@@ -7162,7 +7144,7 @@ bias_abw_pfvc_path <- file.path(
   paste0("bias_abw_pfvc_ratio_", site_name, ".pdf")
 )
 
-ggsave(bias_abw_pfvc_path, bias_abw_pfvc, width = 14, height = 18)
+save_script04_plot(bias_abw_pfvc_path, bias_abw_pfvc, width = 14, height = 18)
 
 message("All bias diagnostic plots saved")
 
@@ -7322,11 +7304,13 @@ bias_presentation_output_qc <- purrr::imap_dfr(bias_presentation_results, functi
   spec <- bias_presentation_specs[[plot_name]]
   output_path <- file.path(figure_dir, spec$filename)
   
-  ggplot2::ggsave(
+  message("Script 04 checkpoint | rendering presentation PDF: ", plot_name)
+  save_script04_plot(
     filename = output_path, plot = result$plot,
     device = "pdf", width = spec$width, height = spec$height,
     units = "in", bg = "white"
   )
+  message("Script 04 checkpoint | presentation PDF render returned: ", plot_name)
   
   output_exists <- file.exists(output_path)
   output_size <- if (output_exists) file.info(output_path, extra_cols = FALSE)$size[[1]] else NA_real_
@@ -7390,7 +7374,6 @@ stopifnot(
   isTRUE(all(unlist(bias_presentation_checks)))
 )
 
-print(bias_presentation_output_qc, n = Inf, width = Inf)
 message("Aligned elastance and mortality presentation copies saved.")
 
 # Validate locally rendered package outputs without modifying the algorithmDiagnostics interface or returned objects.
@@ -7703,8 +7686,6 @@ conditional_bias_output_checks <- list(
     all(conditional_bias_output_qc$output_nonempty)
 )
 
-print(conditional_bias_output_qc, n = Inf, width = Inf)
-print(conditional_bias_plot_specifications, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(conditional_bias_output_checks))))
 
@@ -7778,8 +7759,6 @@ attrition_checks <- list(
   attrition_site_valid = attrition_site_valid
 )
 
-print(attrition, n = Inf, width = Inf)
-print(attrition_qc, width = Inf)
 
 stopifnot(isTRUE(all(unlist(attrition_checks))))
 
@@ -7790,7 +7769,7 @@ stopifnot(isTRUE(all(unlist(attrition_checks))))
 consort_fig <- render_consort(attrition, title = paste0("Cohort inclusion - ", site_name))
 consort_output_path <- file.path(figure_dir, paste0("consort_diagram_", site_name, ".pdf"))
 
-ggsave(consort_output_path, consort_fig, width = 9, height = 11)
+save_script04_plot(consort_output_path, consort_fig, width = 9, height = 11)
 
 message("CONSORT diagram saved")
 
@@ -7876,8 +7855,6 @@ distribution_input_checks <- list(
   distribution_race_levels_valid = identical(levels(dist_base$race_category), c("WHITE", "BLACK", "OTHER"))
 )
 
-print(distribution_variable_qc, n = Inf, width = Inf)
-print(distribution_group_qc, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(distribution_input_checks))))
 
@@ -7928,7 +7905,7 @@ distribution_output_path <- file.path(
   paste0("distribution_weight_methods_pfvc_", site_name, ".pdf")
 )
 
-ggsave(distribution_output_path, dist_fig, width = 14, height = 14)
+save_script04_plot(distribution_output_path, dist_fig, width = 14, height = 14)
 
 message("Weight/PFVC distribution figure saved")
 
@@ -7959,15 +7936,32 @@ site_qc_plot_checks <- list(
   site_qc_output_files_nonempty = all(site_qc_output_paths$nonempty)
 )
 
-print(site_qc_output_paths, n = Inf, width = Inf)
 
 stopifnot(isTRUE(all(unlist(site_qc_plot_checks))))
+
+# Preserve the CSV's column values and stable metadata while excluding the
+# readr problems attribute that does not retain strict identity on serialization.
+attrition_for_diagnostic_rds <- attrition
+attr(attrition_for_diagnostic_rds, "problems") <- NULL
+
+stopifnot(
+  identical(names(attrition_for_diagnostic_rds), names(attrition)),
+  identical(class(attrition_for_diagnostic_rds), class(attrition)),
+  all(vapply(
+    names(attrition),
+    function(column) identical(
+      attrition_for_diagnostic_rds[[column]],
+      attrition[[column]]
+    ),
+    logical(1)
+  ))
+)
 
 model_qc$site_qc_figures <- list(
   attrition = list(
     input_path = attrition_path,
     summary = attrition_qc,
-    data = attrition
+    data = attrition_for_diagnostic_rds
   ),
   pbwpfvc_distribution = list(
     input_n = nrow(dist_base),

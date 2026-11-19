@@ -15,6 +15,19 @@ format:
   pdf:
     toc: true
     number-sections: true
+    include-in-header:
+      text: |
+        \usepackage{geometry}
+        \usepackage{pdflscape}
+        \newcommand{\BeginDiagnosticLandscape}{%
+          \clearpage
+          \newgeometry{margin=0.5in}%
+          \begin{landscape}%
+        }
+        \newcommand{\EndDiagnosticLandscape}{%
+          \end{landscape}%
+          \restoregeometry
+        }
 execute:
   echo: false
   warning: false
@@ -183,8 +196,15 @@ if (length(missing_report_components) > 0L) {
   stop("The analysis report is missing required diagnostic components: ", paste(missing_report_components, collapse = ", "))
 }
 
-show_table <- function(x, digits = 2, empty_text = "No records to display.", landscape = FALSE,
-                       character_width = "3.2cm") {
+show_table <- function(
+  x,
+  digits = 2,
+  empty_text = "No records to display.",
+  landscape = FALSE,
+  character_width = "3.2cm",
+  landscape_section = FALSE,
+  first_column_width_cm = NULL
+) {
   if (is.null(x)) {
     return(knitr::asis_output("*Diagnostic not available.*\n\n"))
   }
@@ -197,16 +217,44 @@ show_table <- function(x, digits = 2, empty_text = "No records to display.", lan
     return(knitr::asis_output(paste0("*", empty_text, "*\n\n")))
   }
 
-  x <- as_tibble(x)
+  for (flag in list(landscape, landscape_section)) {
+    if (!is.logical(flag) || length(flag) != 1L || is.na(flag)) {
+      stop("Landscape arguments must be TRUE or FALSE.")
+    }
+  }
 
+  if (!requireNamespace("kableExtra", quietly = TRUE)) {
+    stop("kableExtra is required for diagnostic-report table formatting.")
+  }
+
+  x <- tibble::as_tibble(x)
+
+  # Display labels only; underlying names and values are unchanged.
+  heading_labels <- names(x) %>%
+    stringr::str_replace_all(
+      c(
+        "hospitalizations" = "hosp",
+        "hospitalization" = "hosp",
+        "measurements" = "values",
+        "measurement" = "value",
+        "percentage" = "pct",
+        "percent" = "pct",
+        "minimum" = "min",
+        "maximum" = "max"
+      )
+    ) %>%
+    stringr::str_replace_all("_", " ")
+
+  latex_output <- knitr::is_latex_output()
   long_table <- nrow(x) > 30L
-  wide_table <- ncol(x) > 7L
+  landscape_table <- latex_output && (landscape || landscape_section)
 
   table_output <- knitr::kable(
     x,
+    col.names = heading_labels,
     digits = digits,
-    booktabs = knitr::is_latex_output(),
-    longtable = knitr::is_latex_output() && long_table,
+    booktabs = latex_output,
+    longtable = latex_output && long_table,
     escape = TRUE
   )
 
@@ -214,37 +262,100 @@ show_table <- function(x, digits = 2, empty_text = "No records to display.", lan
     table_output <- table_output %>%
       kableExtra::kable_styling(
         bootstrap_options = c("striped", "condensed", "responsive"),
-        full_width = FALSE, position = "left", font_size = 10
+        full_width = FALSE,
+        position = "left",
+        font_size = 10
       ) %>%
       kableExtra::scroll_box(width = "100%")
   }
 
-  if (knitr::is_latex_output()) {
-    latex_options <- if (long_table) {
-      c("repeat_header")
-    } else if (wide_table) {
-      c("hold_position", "scale_down")
-    } else {
-      c("hold_position")
-    }
+  if (latex_output) {
+    width_budget_cm <- if (landscape_table) 20 else 13
 
     table_output <- table_output %>%
       kableExtra::kable_styling(
-        latex_options = latex_options,
-        font_size = if (wide_table) 7 else 8,
+        latex_options = if (long_table) "repeat_header" else "hold_position",
+        font_size = if (landscape_table || ncol(x) > 7L) 7 else 8,
         position = "left"
       )
 
-    character_columns <- which(vapply(x, function(column) {
-      is.character(column) || is.factor(column)
-    }, logical(1)))
+    column_weights <- vapply(
+      x,
+      function(column) {
+        if (is.character(column) || is.factor(column)) 2 else 1
+      },
+      numeric(1)
+    )
 
-    for (column_number in character_columns) {
-      table_output <- table_output %>%
-        kableExtra::column_spec(column_number, width = character_width)
+    if (
+      !is.character(character_width) ||
+      length(character_width) != 1L ||
+      is.na(character_width) ||
+      !grepl("^[0-9]+(\\.[0-9]+)?cm$", character_width)
+    ) {
+      stop("character_width must be a positive width expressed in cm.")
     }
 
-    if (landscape) {
+    requested_character_width <- as.numeric(sub("cm$", "", character_width))
+    if (!is.finite(requested_character_width) || requested_character_width <= 0) {
+      stop("character_width must be positive.")
+    }
+
+    if (is.null(first_column_width_cm)) {
+      first_label <- tolower(trimws(heading_labels[[1L]]))
+      first_is_text <- is.character(x[[1L]]) || is.factor(x[[1L]])
+
+      first_column_width_cm <- if (
+        grepl("filter step|exclusion reason|interpretation", first_label)
+      ) {
+        4.5
+      } else if (grepl("^device$|device category", first_label)) {
+        2.5
+      } else if (!first_is_text) {
+        1.8
+      } else {
+        requested_character_width
+      }
+    }
+
+    if (
+      !is.numeric(first_column_width_cm) ||
+      length(first_column_width_cm) != 1L ||
+      is.na(first_column_width_cm) ||
+      !is.finite(first_column_width_cm) ||
+      first_column_width_cm <= 0 ||
+      first_column_width_cm >= width_budget_cm
+    ) {
+      stop("first_column_width_cm must be positive and below the table budget.")
+    }
+
+    if (ncol(x) == 1L) {
+      column_widths_cm <- first_column_width_cm
+    } else {
+      remaining_weights <- column_weights[-1L]
+      column_widths_cm <- c(
+        first_column_width_cm,
+        (width_budget_cm - first_column_width_cm) *
+          remaining_weights / sum(remaining_weights)
+      )
+    }
+
+    for (column_number in seq_len(ncol(x))) {
+      table_output <- kableExtra::column_spec(
+        table_output,
+        column = column_number,
+        width = paste0(
+          formatC(
+            column_widths_cm[[column_number]],
+            format = "f",
+            digits = 2
+          ),
+          "cm"
+        )
+      )
+    }
+
+    if (landscape_table && !landscape_section) {
       table_output <- kableExtra::landscape(table_output)
     }
   }
@@ -515,6 +626,10 @@ show_table(checks_to_table(table1_qc$checks))
 
 # Adjustment covariates and exposure specifications
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Adjustment-covariate availability
 
 ```{r}
@@ -532,7 +647,12 @@ adjustment_covariate_report <- model_qc$adjustment_covariates$variable_summary %
     Max = maximum
   )
 
-show_table(adjustment_covariate_report, landscape = TRUE)
+show_table(landscape_section = TRUE, adjustment_covariate_report, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Complete-case availability by adjustment set
@@ -541,10 +661,19 @@ show_table(adjustment_covariate_report, landscape = TRUE)
 show_table(model_qc$adjustment_covariates$complete_case_summary)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Exposure-variable summary
 
 ```{r}
-show_table(model_qc$exposures$variable_summary)
+show_table(landscape_section = TRUE, model_qc$exposures$variable_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Exposure specifications
@@ -561,7 +690,7 @@ exposure_specification_report <- model_qc$exposures$specification_summary %>%
     `Full rank` = full_rank
   )
 
-show_table(exposure_specification_report, landscape = TRUE)
+show_table(exposure_specification_report, landscape = FALSE)
 ```
 
 ## Pairwise exposure correlations
@@ -572,17 +701,39 @@ show_table(model_qc$exposures$pairwise_correlations)
 
 # Sixty-day mortality models
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Outcome summary
 
 ```{r}
-show_table(model_qc$mortality$outcome_summary)
+show_table(landscape_section = TRUE, model_qc$mortality$outcome_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Analysis sample
 
 ```{r}
-show_table(model_qc$mortality$analysis_sample$sample_summary)
-show_table(model_qc$mortality$analysis_sample$inclusion_by_outcome)
+show_table(landscape_section = TRUE, model_qc$mortality$analysis_sample$sample_summary)
+show_table(landscape_section = TRUE, model_qc$mortality$analysis_sample$inclusion_by_outcome)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Model diagnostics
@@ -603,13 +754,22 @@ mortality_model_report <- model_qc$mortality$model_diagnostics %>%
     AIC
   )
 
-show_table(mortality_model_report, landscape = TRUE)
+show_table(landscape_section = TRUE, mortality_model_report, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Events per parameter
 
 ```{r}
 show_table(model_qc$mortality$events_per_parameter_below_10)
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Influence summary
@@ -630,21 +790,44 @@ mortality_influence_report <- model_qc$mortality$influence_diagnostics$summary %
     `Max |DFBETA|` = maximum_absolute_dfbeta
   )
 
-show_table(mortality_influence_report, digits = 3, landscape = TRUE)
+show_table(landscape_section = TRUE, mortality_influence_report, digits = 3, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 # Continuous-outcome models
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Outcome availability
 
 ```{r}
-show_table(model_qc$continuous_outcomes$variable_summary)
+show_table(landscape_section = TRUE, model_qc$continuous_outcomes$variable_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Analysis sample sizes
 
 ```{r}
-show_table(model_qc$continuous_outcomes$common_sample_summary)
+show_table(landscape_section = TRUE, model_qc$continuous_outcomes$common_sample_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Mathematical constraints
@@ -667,6 +850,10 @@ Plateau-derived values represent static driving-pressure estimates. PIP-derived 
 equivalent to plateau-derived static driving pressure. Interpret the mechanics analyses alongside the
 reported source distribution.
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Basic model diagnostics
 
 ```{r}
@@ -684,7 +871,16 @@ continuous_basic_report <- model_qc$continuous_outcomes$basic_model_diagnostics 
     AIC
   )
 
-show_table(continuous_basic_report, landscape = TRUE)
+show_table(landscape_section = TRUE, continuous_basic_report, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Residual-diagnostic summary
@@ -702,44 +898,98 @@ continuous_diagnostic_report <- model_qc$continuous_outcomes$diagnostic_summary 
     `High leverage` = n_with_high_leverage
   )
 
-show_table(continuous_diagnostic_report, landscape = TRUE)
+show_table(landscape_section = TRUE, continuous_diagnostic_report, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Influence summary
 
 ```{r}
-show_table(model_qc$continuous_outcomes$influence_summary)
+show_table(landscape_section = TRUE, model_qc$continuous_outcomes$influence_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Log-scale elastance and compliance sensitivity
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   model_qc$continuous_outcomes$log_sensitivity$raw_vs_log_diagnostic_comparison
 )
 ```
 
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
 # Competing-risk analysis for successful liberation
+
+```{=latex}
+\BeginDiagnosticLandscape
+```
 
 ## VFD outcome summary
 
 ```{r}
-show_table(model_qc$vfd_competing_risks$outcome_summary)
+show_table(landscape_section = TRUE, model_qc$vfd_competing_risks$outcome_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Analysis sample
 
 ```{r}
-show_table(model_qc$vfd_competing_risks$analysis_sample)
-show_table(model_qc$vfd_competing_risks$inclusion_by_status)
+show_table(landscape_section = TRUE, model_qc$vfd_competing_risks$analysis_sample)
+show_table(landscape_section = TRUE, model_qc$vfd_competing_risks$inclusion_by_status)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Censoring summary
 
 ```{r}
-show_table(model_qc$vfd_competing_risks$censoring$full_cohort_summary)
-show_table(model_qc$vfd_competing_risks$censoring$full_cohort_time_distribution)
-show_table(model_qc$vfd_competing_risks$censoring$analysis_sample_summary)
+show_table(landscape_section = TRUE, model_qc$vfd_competing_risks$censoring$full_cohort_summary)
+show_table(landscape_section = TRUE, model_qc$vfd_competing_risks$censoring$full_cohort_time_distribution)
+show_table(landscape_section = TRUE, model_qc$vfd_competing_risks$censoring$analysis_sample_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Fine-Gray model diagnostics
@@ -760,7 +1010,12 @@ finegray_model_report <- model_qc$vfd_competing_risks$model_diagnostics %>%
     AIC
   )
 
-show_table(finegray_model_report, landscape = TRUE)
+show_table(landscape_section = TRUE, finegray_model_report, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Proportional subdistribution-hazards diagnostics
@@ -786,7 +1041,11 @@ aic_input_report <- model_qc$aic_comparison$input_models %>%
     Likelihood = likelihood_type
   )
 
-show_table(aic_input_report, landscape = TRUE)
+show_table(aic_input_report, landscape = FALSE)
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Outcome-level AIC summary
@@ -805,13 +1064,22 @@ aic_outcome_report <- model_qc$aic_comparison$outcome_summary %>%
     `AIC range` = AIC_range
   )
 
-show_table(aic_outcome_report, landscape = TRUE)
+show_table(landscape_section = TRUE, aic_outcome_report, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Evidence-ratio QC
 
 ```{r}
-show_table(model_qc$aic_comparison$evidence_ratio_qc)
+show_table(landscape_section = TRUE, model_qc$aic_comparison$evidence_ratio_qc)
 ```
 
 ```{r}
@@ -825,20 +1093,47 @@ cat(
 )
 ```
 
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
 # Sixty-day survival analysis
+
+```{=latex}
+\BeginDiagnosticLandscape
+```
 
 ## Survival endpoint
 
 ```{r}
-show_table(model_qc$survival$endpoint_summary)
-show_table(model_qc$survival$time_by_status)
+show_table(landscape_section = TRUE, model_qc$survival$endpoint_summary)
+show_table(landscape_section = TRUE, model_qc$survival$time_by_status)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Cox-model analysis sample
 
 ```{r}
-show_table(model_qc$survival$cox_analysis_sample$sample_summary)
-show_table(model_qc$survival$cox_analysis_sample$inclusion_by_status)
+show_table(landscape_section = TRUE, model_qc$survival$cox_analysis_sample$sample_summary)
+show_table(landscape_section = TRUE, model_qc$survival$cox_analysis_sample$inclusion_by_status)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Adjusted Cox-model diagnostics
@@ -860,7 +1155,12 @@ cox_model_report <- model_qc$survival$cox_model_diagnostics %>%
     AIC
   )
 
-show_table(cox_model_report, landscape = TRUE)
+show_table(landscape_section = TRUE, cox_model_report, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Proportional-hazards diagnostics
@@ -875,6 +1175,10 @@ show_table(model_qc$survival$proportional_hazards$summary)
 
 ```{r}
 show_table(model_qc$survival$race_stratified_sensitivity$race_stratum_summary)
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ### Focal-estimate comparison
@@ -895,7 +1199,12 @@ cox_sensitivity_report <- model_qc$survival$race_stratified_sensitivity$focal_es
     `HR ratio` = ratio_of_hazard_ratios
   )
 
-show_table(cox_sensitivity_report, digits = 3, landscape = TRUE)
+show_table(landscape_section = TRUE, cox_sensitivity_report, digits = 3, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ### Proportional-hazards reassessment
@@ -911,16 +1220,34 @@ show_table(
 Each weight/PFVC method uses the survival-valid patients with an available finite ratio.
 Terciles are constructed independently for each method, so sample sizes and assignments can differ.
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ### Analysis samples
 
 ```{r}
-show_table(model_qc$survival$kaplan_meier$sample_summary)
+show_table(landscape_section = TRUE, model_qc$survival$kaplan_meier$sample_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ### Tercile summaries by weight method
 
 ```{r}
-show_table(model_qc$survival$kaplan_meier$method_summary, landscape = TRUE)
+show_table(landscape_section = TRUE, model_qc$survival$kaplan_meier$method_summary, landscape = FALSE)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ### Log-rank tests
@@ -937,10 +1264,19 @@ show_table(model_qc$survival$kaplan_meier$checks)
 
 # Demographic-bias models
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Input summary
 
 ```{r}
-show_table(model_qc$demographic_bias$input_summary)
+show_table(landscape_section = TRUE, model_qc$demographic_bias$input_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Outcome standardization
@@ -949,16 +1285,34 @@ show_table(model_qc$demographic_bias$input_summary)
 show_table(model_qc$demographic_bias$standardization)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Model sample sizes
 
 ```{r}
-show_table(model_qc$demographic_bias$sample_summary)
+show_table(landscape_section = TRUE, model_qc$demographic_bias$sample_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Sparse-event warning
 
 ```{r}
-show_table(model_qc$demographic_bias$sparse_event_warning)
+show_table(landscape_section = TRUE, model_qc$demographic_bias$sparse_event_warning)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 # Predicted FVC versus predicted body weight
@@ -967,11 +1321,24 @@ PFVC and PBW are predicted quantities derived partly from demographic variables.
 These analyses characterize relationships among prediction formulas rather than
 measured lung function.
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Broad-cohort input summary
 
 ```{r}
-show_table(model_qc$pfvc_vs_pbw$input_summary)
-show_table(model_qc$pfvc_vs_pbw$sample_summary)
+show_table(landscape_section = TRUE, model_qc$pfvc_vs_pbw$input_summary)
+show_table(landscape_section = TRUE, model_qc$pfvc_vs_pbw$sample_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Primary-model diagnostics
@@ -995,24 +1362,47 @@ pfvc_model_report <- model_qc$pfvc_vs_pbw$model_diagnostics %>%
     `Leverage flags` = n_leverage_above_threshold
   )
 
-show_table(pfvc_model_report, digits = 3, landscape = TRUE)
-show_table(model_qc$pfvc_vs_pbw$diagnostic_flags)
+show_table(landscape_section = TRUE, pfvc_model_report, digits = 3, landscape = FALSE)
+show_table(landscape_section = TRUE, model_qc$pfvc_vs_pbw$diagnostic_flags)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Nonlinear sensitivity
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   model_qc$pfvc_vs_pbw$nonlinear_sensitivity$linear_vs_spline_comparison
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Sex-specific nonlinear sensitivity
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   model_qc$pfvc_vs_pbw$sex_specific_nonlinear_sensitivity$model_comparison
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 # Unified long-format regression artifact
@@ -1057,10 +1447,14 @@ show_table(
 
 # Age functional-form and E-value sensitivity
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Result summary
 
 ```{r}
-show_table(model_qc$residual_confounding$result_summary)
+show_table(landscape_section = TRUE, model_qc$residual_confounding$result_summary)
 ```
 
 ```{r}
@@ -1074,16 +1468,30 @@ cat(
 )
 ```
 
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
 # Conditional-bias diagnostics
 
 The local `algorithmDiagnostics` package interface and defaults were retained
 unchanged. These figures are descriptive; sparse demographic-percentile cells
 may produce unstable confidence intervals or blank intervals.
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Input variables
 
 ```{r}
-show_table(model_qc$conditional_bias$variable_summary)
+show_table(landscape_section = TRUE, model_qc$conditional_bias$variable_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Grouping variables
@@ -1092,10 +1500,19 @@ show_table(model_qc$conditional_bias$variable_summary)
 show_table(model_qc$conditional_bias$grouping_summary)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Plot specifications
 
 ```{r}
-show_table(model_qc$conditional_bias$plot_specifications)
+show_table(landscape_section = TRUE, model_qc$conditional_bias$plot_specifications)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Plot outputs
@@ -1115,10 +1532,19 @@ show_table(conditional_bias_output_report)
 
 # Cohort-flow and site-QC figures
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Attrition summary
 
 ```{r}
-show_table(model_qc$site_qc_figures$attrition$summary)
+show_table(landscape_section = TRUE, model_qc$site_qc_figures$attrition$summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Attrition log
@@ -1136,11 +1562,20 @@ attrition_report <- model_qc$site_qc_figures$attrition$data %>%
 show_table(attrition_report, character_width = "3.8cm")
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## PBW/PFVC distribution inputs
 
 ```{r}
-show_table(model_qc$site_qc_figures$pbwpfvc_distribution$variable_summary)
-show_table(model_qc$site_qc_figures$pbwpfvc_distribution$grouping_summary)
+show_table(landscape_section = TRUE, model_qc$site_qc_figures$pbwpfvc_distribution$variable_summary)
+show_table(landscape_section = TRUE, model_qc$site_qc_figures$pbwpfvc_distribution$grouping_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Site-QC outputs

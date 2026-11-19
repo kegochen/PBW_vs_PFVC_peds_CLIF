@@ -14,6 +14,19 @@ format:
   pdf:
     toc: true
     number-sections: true
+    include-in-header:
+      text: |
+        \usepackage{geometry}
+        \usepackage{pdflscape}
+        \newcommand{\BeginDiagnosticLandscape}{%
+          \clearpage
+          \newgeometry{margin=0.5in}%
+          \begin{landscape}%
+        }
+        \newcommand{\EndDiagnosticLandscape}{%
+          \end{landscape}%
+          \restoregeometry
+        }
 execute:
   echo: false
   warning: false
@@ -211,7 +224,13 @@ if (length(missing_selected_tv_components) > 0L) {
   )
 }
 
-show_table <- function(x, digits = 1, empty_text = "No records to display.") {
+show_table <- function(
+  x,
+  digits = 1,
+  empty_text = "No records to display.",
+  first_column_width_cm = NULL,
+  landscape_section = FALSE
+) {
   if (is.null(x)) {
     return(knitr::asis_output("*Diagnostic not available.*\n\n"))
   }
@@ -221,19 +240,140 @@ show_table <- function(x, digits = 1, empty_text = "No records to display.") {
   }
 
   if (nrow(x) == 0L) {
-    return(
-      knitr::asis_output(
-        paste0("*", empty_text, "*\n\n")
-      )
-    )
+    return(knitr::asis_output(paste0("*", empty_text, "*\n\n")))
   }
 
-  knitr::kable(
+  if (!requireNamespace("kableExtra", quietly = TRUE)) {
+    stop("kableExtra is required for diagnostic-report table formatting.")
+  }
+
+  # Display labels only; underlying names and values remain unchanged.
+  heading_labels <- names(x) %>%
+    str_replace_all(
+      c(
+        "hospitalizations" = "hosp",
+        "hospitalization" = "hosp",
+        "measurements" = "values",
+        "measurement" = "value",
+        "percentage" = "pct",
+        "percent" = "pct",
+        "minimum" = "min",
+        "maximum" = "max"
+      )
+    ) %>%
+    str_replace_all("_", " ")
+
+  latex_output <- knitr::is_latex_output()
+  long_table <- nrow(x) > 30L
+  if (
+    !is.logical(landscape_section) ||
+    length(landscape_section) != 1L ||
+    is.na(landscape_section)
+  ) {
+    stop("landscape_section must be TRUE or FALSE.")
+  }
+
+  landscape_table <- latex_output &&
+    (landscape_section || ncol(x) >= 5L)
+
+  table_output <- knitr::kable(
     x,
+    col.names = heading_labels,
     digits = digits,
-    booktabs = knitr::is_latex_output(),
-    longtable = knitr::is_latex_output() && nrow(x) > 30L
+    booktabs = latex_output,
+    longtable = latex_output && long_table,
+    escape = TRUE
   )
+
+  if (knitr::is_html_output()) {
+    table_output <- table_output %>%
+      kableExtra::kable_styling(
+        bootstrap_options = c("striped", "condensed", "responsive"),
+        full_width = FALSE,
+        position = "left",
+        font_size = 10
+      ) %>%
+      kableExtra::scroll_box(width = "100%")
+  }
+
+  if (latex_output) {
+    table_output <- table_output %>%
+      kableExtra::kable_styling(
+        latex_options = if (long_table) "repeat_header" else "hold_position",
+        font_size = if (landscape_table) 7 else 8,
+        position = "left"
+      )
+
+    width_budget_cm <- if (landscape_table) 20 else 13
+
+    column_weights <- vapply(
+      x,
+      function(column) {
+        if (is.character(column) || is.factor(column)) 2 else 1
+      },
+      numeric(1)
+    )
+
+    if (is.null(first_column_width_cm)) {
+      first_label <- tolower(trimws(heading_labels[[1L]]))
+      first_is_text <- is.character(x[[1L]]) || is.factor(x[[1L]])
+
+      first_column_width_cm <- if (
+        grepl("filter step|exclusion reason|interpretation", first_label)
+      ) {
+        4.5
+      } else if (grepl("device category", first_label)) {
+        2.5
+      } else if (!first_is_text) {
+        1.8
+      } else {
+        3.0
+      }
+    }
+
+    if (
+      !is.numeric(first_column_width_cm) ||
+      length(first_column_width_cm) != 1L ||
+      is.na(first_column_width_cm) ||
+      !is.finite(first_column_width_cm) ||
+      first_column_width_cm <= 0 ||
+      first_column_width_cm >= width_budget_cm
+    ) {
+      stop("first_column_width_cm must be a positive width below the table budget.")
+    }
+
+    if (ncol(x) == 1L) {
+      column_widths_cm <- first_column_width_cm
+    } else {
+      remaining_weights <- column_weights[-1L]
+      column_widths_cm <- c(
+        first_column_width_cm,
+        (width_budget_cm - first_column_width_cm) *
+          remaining_weights / sum(remaining_weights)
+      )
+    }
+
+    for (column_number in seq_len(ncol(x))) {
+      table_output <- kableExtra::column_spec(
+        table_output,
+        column = column_number,
+        width = paste0(
+          formatC(
+            column_widths_cm[[column_number]],
+            format = "f",
+            digits = 2
+          ),
+          "cm"
+        )
+      )
+    }
+
+    if (landscape_table && !landscape_section) {
+      table_output <- kableExtra::landscape(table_output)
+    }
+  }
+
+  table_output
 }
 
 show_note <- function(text) {
@@ -262,12 +402,21 @@ show_table(overview)
 
 # Cohort identification
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Cumulative cohort filtering
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   diagnostics$cumulative_filter_summary
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Age eligibility
@@ -320,10 +469,19 @@ A hospitalization can contribute events under more than one method. Method-speci
 show_table(diagnostics$intubation_identification$method_summary)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## ICU interval quality
 
 ```{r}
-show_table(diagnostics$intubation_identification$icu_interval_summary)
+show_table(landscape_section = TRUE, diagnostics$intubation_identification$icu_interval_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Invasive-transition documentation source
@@ -332,10 +490,19 @@ show_table(diagnostics$intubation_identification$icu_interval_summary)
 show_table(diagnostics$intubation_identification$transition_source_qc)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Respiratory-support timestamp reconciliation
 
 ```{r}
-show_table(diagnostics$intubation_identification$respiratory_timestamp_summary)
+show_table(landscape_section = TRUE, diagnostics$intubation_identification$respiratory_timestamp_summary)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Respiratory-support conflict resolution
@@ -441,12 +608,25 @@ show_table(
 )
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Mode missingness by row type
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   diagnostics$waterfall_process$mode_missing_summary
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Mode missingness by encounter
@@ -475,9 +655,14 @@ if (!is.null(mode_missing_encounter_report)) {
     str_to_sentence()
 }
 
-show_table(
+show_table(landscape_section = TRUE, 
   mode_missing_encounter_report
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 # Height
@@ -494,10 +679,19 @@ show_table(diagnostics$height$source_summary)
 show_table(diagnostics$height$recovery_summary)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Agreement between index-hospitalization sources
 
 ```{r}
-show_table(diagnostics$height$source_agreement, digits = 2)
+show_table(landscape_section = TRUE, diagnostics$height$source_agreement, digits = 2)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Supplemental-height configuration and linkage
@@ -588,10 +782,19 @@ Source-row identifiers, patient identifiers, encounter identifiers, and measurem
 reader are not displayed in this section. Their retention in the local diagnostic RDS does not authorize export.
 The aggregate tables shown here also require the project's eventual disclosure review.
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Supplemental-source dispersion
 
 ```{r}
-show_table(diagnostics$height$supplemental_dispersion, digits = 2)
+show_table(landscape_section = TRUE, diagnostics$height$supplemental_dispersion, digits = 2)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Height integrity checks
@@ -610,10 +813,14 @@ show_table(
 )
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Weight-range checks
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   diagnostics$weight$range_summary
 )
 ```
@@ -644,6 +851,11 @@ if (!is.null(diagnostics$weight$expected_range_kg)) {
     sep = ""
   )
 }
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 # Clinical-data availability
@@ -820,14 +1032,32 @@ least one usable value before cleaning and no usable values afterward.
 show_table(qc02$cohort_id_qc)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Post-intubation tidal-volume input
 
 ```{r}
-show_table(qc02$post_intubation_tidal_volume$input_summary)
+show_table(
+  qc02$post_intubation_tidal_volume$input_summary,
+  landscape_section = TRUE
+)
 ```
 
 ```{r}
-show_table(qc02$post_intubation_tidal_volume$checks)
+show_table(
+  qc02$post_intubation_tidal_volume$checks,
+  landscape_section = TRUE
+)
+```
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Combined availability and dropout
@@ -850,9 +1080,14 @@ combined_dropout_report <-
       percent_lost_among_those_with_data_before
   )
 
-show_table(
+show_table(landscape_section = TRUE, 
   combined_dropout_report
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Threshold rules causing complete data loss
@@ -883,14 +1118,23 @@ if (
 }
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 # Script 02: Laboratory quality checks
 
 ## Availability before and after cleaning
 
 ```{r}
 show_table(
-  qc02$labs$dropout_summary
+  qc02$labs$dropout_summary,
+  landscape_section = TRUE
 )
+```
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Rules causing complete vital-sign data loss
@@ -939,14 +1183,23 @@ show_table(
 )
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 # Script 02: Vital-sign quality checks
 
 ## Availability before and after cleaning
 
 ```{r}
 show_table(
-  qc02$vitals$dropout_summary
+  qc02$vitals$dropout_summary,
+  landscape_section = TRUE
 )
+```
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Exact-row deduplication
@@ -965,12 +1218,21 @@ show_table(
 )
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Duplicate records by vital category
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   qc02$vitals$duplicate_by_category
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Vital-sign integrity checks
@@ -979,6 +1241,10 @@ show_table(
 show_table(
   qc02$vitals$integrity_summary
 )
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 # Script 02: Height quality checks
@@ -990,8 +1256,13 @@ effect of applying the selected plausibility threshold in Script 02.
 
 ```{r}
 show_table(
-  qc02$heights$dropout_summary
+  qc02$heights$dropout_summary,
+  landscape_section = TRUE
 )
+```
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Threshold causing complete height loss
@@ -1056,6 +1327,10 @@ show_table(
 )
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 # Script 02: Respiratory-support quality checks
 
 This section summarizes hospitalization-level availability before and after
@@ -1082,7 +1357,14 @@ respiratory_dropout_report <-
       percent_lost_among_those_with_data_before
   )
 
-show_table(respiratory_dropout_report)
+show_table(
+  respiratory_dropout_report,
+  landscape_section = TRUE
+)
+```
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Thresholds causing complete respiratory-data loss
@@ -1107,6 +1389,10 @@ if (
 }
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Values responsible for complete loss
 
 ```{r}
@@ -1129,10 +1415,15 @@ respiratory_loss_value_report <-
     Max = maximum_removed_value
   )
 
-show_table(
+show_table(landscape_section = TRUE, 
   respiratory_loss_value_report,
   digits = 2
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Respiratory-support integrity checks
@@ -1142,6 +1433,10 @@ show_table(
   qc02$respiratory_support$
     integrity_summary
 )
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Respiratory-threshold decisions
@@ -1165,7 +1460,12 @@ respiratory_decision_table <-
     `Evidence status` = literature_status
   )
 
-show_table(respiratory_decision_table)
+show_table(landscape_section = TRUE, respiratory_decision_table)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ### Rationale for decisions
@@ -1201,18 +1501,31 @@ The respiratory thresholds above are currently implemented as
 analysis-specific overrides. Final approved thresholds should be moved into the
 respiratory-support threshold CSV after literature and ETL review.
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Set tidal-volume unit investigation
 
 Values below 25 in `tidal_volume_set` remain excluded because they may mix
 absolute tidal volume in mL with weight-normalized tidal volume in mL/kg.
 
 ```{r}
-show_table(
+show_table(landscape_section = TRUE, 
   qc02$respiratory_support$
     tidal_volume_complete_loss$
     summary,
   digits = 2
 )
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Hospitalizations losing all set tidal-volume data
@@ -1250,11 +1563,16 @@ if (
       `Inferred rows` = n_inferred_rows
     )
 
-  show_table(
+  show_table(landscape_section = TRUE, 
     tidal_volume_loss_report,
     digits = 2
   )
 }
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 # Script 03: Variable derivation and final cohort
@@ -1316,17 +1634,43 @@ if (is.null(qc03)) {
 }
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Eligible post-intubation timepoints
 
 ```{r}
-show_table(qc03$post_intubation_timepoints$input_summary)
-show_table(qc03$post_intubation_timepoints$context_summary)
-show_table(qc03$post_intubation_timepoints$context_source_summary)
+show_table(
+  qc03$post_intubation_timepoints$input_summary,
+  landscape_section = TRUE
+)
+
+show_table(
+  qc03$post_intubation_timepoints$context_summary,
+  landscape_section = TRUE
+)
+
+show_table(
+  qc03$post_intubation_timepoints$context_source_summary,
+  landscape_section = TRUE
+)
 ```
 
 ```{r}
-show_table(qc03$post_intubation_timepoints$input_checks)
-show_table(qc03$post_intubation_timepoints$context_checks)
+show_table(
+  qc03$post_intubation_timepoints$input_checks,
+  landscape_section = TRUE
+)
+
+show_table(
+  qc03$post_intubation_timepoints$context_checks,
+  landscape_section = TRUE
+)
+```
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Selected analytic tidal-volume cleaning
@@ -1363,6 +1707,10 @@ show_table(selected_tv_qc$retention)
 show_table(selected_tv_qc$checks)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ## Script 03 cohort funnel
 
 The funnel begins with hospitalizations having PBW and positive PFVC, then
@@ -1388,10 +1736,19 @@ if (is.null(qc03)) {
         percent_retained_from_pbw_pfvc
     )
 
-  show_table(
+  show_table(landscape_section = TRUE, 
     script03_funnel_report
   )
 }
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ## Funnel reconciliation
@@ -1414,10 +1771,15 @@ if (is.null(qc03)) {
       Difference = difference
     )
 
-  show_table(
+  show_table(landscape_section = TRUE, 
     script03_reconciliation_report
   )
 }
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ## Final variable availability
@@ -1602,6 +1964,10 @@ respiratory_psofa_source_report <- respiratory_psofa_qc$source_summary %>%
 show_table(respiratory_psofa_source_report, digits = 0)
 ```
 
+```{=latex}
+\BeginDiagnosticLandscape
+```
+
 ### Measured-only versus implemented respiratory score
 
 A score change is the implemented respiratory score minus the measured-only respiratory score.
@@ -1619,7 +1985,16 @@ respiratory_psofa_comparison_report <- respiratory_psofa_qc$score_comparison %>%
     `Hospitalization-days` = n_hospitalization_days
   )
 
-show_table(respiratory_psofa_comparison_report, digits = 0)
+show_table(landscape_section = TRUE, respiratory_psofa_comparison_report, digits = 0)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
+```
+
+```{=latex}
+\BeginDiagnosticLandscape
 ```
 
 ### Respiratory-device mapping
@@ -1639,7 +2014,12 @@ respiratory_psofa_device_report <- respiratory_psofa_qc$device_linkage %>%
     `Hospitalization-days` = n_hospitalization_days
   )
 
-show_table(respiratory_psofa_device_report, digits = 0)
+show_table(landscape_section = TRUE, respiratory_psofa_device_report, digits = 0)
+```
+
+
+```{=latex}
+\EndDiagnosticLandscape
 ```
 
 ### Respiratory pSOFA integrity checks

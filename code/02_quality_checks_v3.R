@@ -79,9 +79,6 @@ if (length(missing_script02_directories) > 0L) {
 }
 
 message("Script 02 starting | site: ", site_name)
-message("Intermediate input/output directory: ", output_dir)
-message("Shared threshold directory: ", thresholds)
-message("Cohort diagnostic directory: ", diagnostic_dir)
   
 # =============================================================================
 # Utility functions
@@ -136,6 +133,7 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
     stop("The Script 01 diagnostic RDS was not found: ", diagnostic_rds_path)
   }
   
+  message("Script 02 | loading and validating Script 01 inputs")
   cohort_ids <- readRDS(file.path(output_dir, "cohort_hospitalization_ids.rds"))
   resp_waterfall <- read_parquet(file.path(output_dir, "resp_support_waterfall.parquet"))
   post_intubation_tidal_volume_rows <- read_parquet(file.path(output_dir, "post_intubation_tidal_volume_rows.parquet"))
@@ -244,11 +242,12 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
     count(intubation_identification_method, name = "n_rows") %>%
     mutate(percent = round(100 * n_rows / sum(n_rows), 1))
   
-  message("---- Post-intubation tidal-volume input QC ----")
-  print(post_intubation_input_qc, width = Inf)
-  print(post_intubation_method_summary, n = Inf, width = Inf)
-  print(post_intubation_input_checks_table, n = Inf, width = Inf)
-  
+  if (!isTRUE(all(post_intubation_input_checks_table$passed))) {
+    print(post_intubation_input_qc, width = Inf)
+    print(post_intubation_method_summary, n = Inf, width = Inf)
+    print(post_intubation_input_checks_table, n = Inf, width = Inf)
+  }
+
   stopifnot(isTRUE(all(post_intubation_input_checks_table$passed)))
   
   required_height_provenance_columns <- c("height_source", "height_gap_days")
@@ -281,8 +280,9 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
     )
   )
   
-  message("---- Height provenance input QC ----")
-  print(height_provenance_input_qc, n = Inf, width = Inf)
+  if (length(missing_height_provenance_columns) > 0L) {
+    print(height_provenance_input_qc, n = Inf, width = Inf)
+  }
   
   if (length(missing_height_provenance_columns) > 0L) {
     stop(
@@ -292,6 +292,7 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
   }
   
   if (anyNA(cohort_heights$height_source)) {
+    print(height_provenance_input_qc, n = Inf, width = Inf)
     stop("cohort_heights.parquet contains missing height_source values.")
   }
   
@@ -299,6 +300,7 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
     cohort_heights$height_source == "Another encounter within window" & is.na(cohort_heights$height_gap_days),
     na.rm = TRUE
   )) {
+    print(height_provenance_input_qc, n = Inf, width = Inf)
     stop("At least one donor-derived height is missing height_gap_days.")
   }
   
@@ -307,10 +309,10 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
     (is.na(cohort_heights$height_gap_days) | cohort_heights$height_gap_days != 0),
     na.rm = TRUE
   )) {
+    print(height_provenance_input_qc, n = Inf, width = Inf)
     stop("At least one non-donor height has a missing or nonzero height_gap_days value.")
   }
   
-  message("Loaded Script 01 intermediate data")
   
 # =============================================================================
 # Index-hospitalization ID integrity
@@ -322,8 +324,9 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
     n = c(length(cohort_ids), n_distinct(cohort_ids, na.rm = TRUE), sum(duplicated(cohort_ids)), sum(is.na(cohort_ids)))
   )
   
-  message("---- Index hospitalization ID QC ----")
-  print(cohort_id_qc, n = Inf)
+  if (anyDuplicated(cohort_ids) || anyNA(cohort_ids)) {
+    print(cohort_id_qc, n = Inf)
+  }
   
   if (anyDuplicated(cohort_ids)) {
     stop("cohort_ids contains duplicate hospitalization IDs. Resolve this before running Script 02.")
@@ -337,6 +340,7 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
 # Laboratory cleaning
 # =============================================================================
   
+  message("Script 02 | cleaning clinical variables and building diagnostics")
   labs_threshold_path <- file.path(thresholds, "outlier_thresholds_labs.csv")
   
   if (!file.exists(labs_threshold_path)) {
@@ -442,14 +446,8 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
           nrow(cohort_labs_clean) - nrow(cohort_labs))
   )
   
-  message("---- Laboratory dropout after cleaning ----")
-  print(lab_dropout_summary, n = Inf, width = Inf)
   
-  message("---- Rules responsible for complete laboratory-data loss ----")
-  print(lab_dropout_rule_summary, n = Inf, width = Inf)
   
-  message("---- Laboratory integrity checks ----")
-  print(lab_integrity_summary, n = Inf)
   
   lab_summary <- generate_summary_stats(cohort_labs_clean, lab_category, lab_value_numeric)
   
@@ -467,8 +465,6 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
           nrow(cohort_vitals_before_deduplication) - nrow(cohort_vitals))
   )
   
-  message("---- Vital exact-row deduplication ----")
-  print(vital_deduplication_summary, n = Inf)
   
   vitals_threshold_path <- file.path(thresholds, "outlier_thresholds_adults_vitals.csv")
   
@@ -609,20 +605,10 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
       .groups = "drop"
     )
   
-  message("---- Vital dropout after cleaning ----")
-  print(vital_dropout_summary, n = Inf, width = Inf)
   
-  message("---- Rules responsible for complete vital loss ----")
-  print(vital_dropout_rule_summary, n = Inf, width = Inf)
   
-  message("---- Vital integrity checks ----")
-  print(vital_integrity_summary, n = Inf)
   
-  message("---- Exact duplicate vital summary ----")
-  print(vital_duplicate_summary, width = Inf)
   
-  message("---- Exact duplicate vitals by category ----")
-  print(vital_duplicate_by_category, n = Inf, width = Inf)
   
   vital_summary <- generate_summary_stats(cohort_vitals_clean, vital_category, vital_value)
   
@@ -666,8 +652,13 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
     )
   )
   
-  message("---- Height provenance output QC ----")
-  print(height_provenance_output_qc, n = Inf, width = Inf)
+  if (
+    length(missing_height_provenance_columns_after_cleaning) > 0L ||
+    !identical(cohort_heights_clean$height_source, cohort_heights$height_source) ||
+    !identical(cohort_heights_clean$height_gap_days, cohort_heights$height_gap_days)
+  ) {
+    print(height_provenance_output_qc, n = Inf, width = Inf)
+  }
   
   if (length(missing_height_provenance_columns_after_cleaning) > 0L) {
     stop(
@@ -796,11 +787,12 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
     passed = as.logical(unlist(height_threshold_checks, use.names = FALSE))
   )
   
-  message("---- Height-threshold comparison ----")
-  print(height_original_rule_summary, width = Inf)
-  print(height_selected_rule_summary, width = Inf)
-  print(height_threshold_checks_table, n = Inf, width = Inf)
-  
+  if (!isTRUE(all(height_threshold_checks_table$passed))) {
+    print(height_original_rule_summary, width = Inf)
+    print(height_selected_rule_summary, width = Inf)
+    print(height_threshold_checks_table, n = Inf, width = Inf)
+  }
+
   stopifnot(isTRUE(all(height_threshold_checks_table$passed)))
   
   height_integrity_summary <- tibble(
@@ -813,19 +805,9 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
           sum(duplicated(as.data.frame(cohort_heights))), nrow(cohort_heights_clean) - nrow(cohort_heights))
   )
   
-  message("---- Height dropout after cleaning ----")
-  print(height_dropout_summary, width = Inf)
   
-  message("---- Rules responsible for complete height loss ----")
-  print(height_dropout_rule_summary, n = Inf, width = Inf)
   
-  message("---- Height integrity checks ----")
-  print(height_integrity_summary, n = Inf)
   
-  message(
-    "Heights before cleaning: ", sum(!is.na(cohort_heights$height_cm)),
-    ", after: ", sum(!is.na(cohort_heights_clean$height_cm))
-  )
   
 # =============================================================================
 # Respiratory-support cleaning
@@ -877,7 +859,6 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
       )
       
       n_after <- sum(!is.na(resp_waterfall_clean[[var_name]]))
-      message(var_name, ": ", n_before - n_after, " outliers removed")
     }
   }
   
@@ -974,14 +955,8 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
           nrow(resp_waterfall_clean) - nrow(resp_waterfall), length(resp_variables))
   )
   
-  message("---- Respiratory-support dropout after cleaning ----")
-  print(resp_dropout_summary, n = Inf, width = Inf)
   
-  message("---- Rules responsible for complete respiratory-variable loss ----")
-  print(resp_dropout_rule_summary, n = Inf, width = Inf)
   
-  message("---- Respiratory-support integrity checks ----")
-  print(resp_integrity_summary, n = Inf)
   
 # =============================================================================
 # Values responsible for complete respiratory-variable loss
@@ -1021,8 +996,6 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
       .groups = "drop"
     )
   
-  message("---- Values causing complete respiratory-variable loss ----")
-  print(resp_complete_loss_value_summary, n = Inf, width = Inf)
   
 # =============================================================================
 # Targeted set tidal-volume unit review
@@ -1114,8 +1087,6 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
       n_without_enough_information = sum(is.na(median_observed_to_weight_scaled_set_ratio))
     )
   
-  message("---- Possible tidal-volume unit pattern ----")
-  print(tidal_volume_unit_pattern_summary, width = Inf)
   
 # =============================================================================
 # Respiratory-threshold decisions
@@ -1145,8 +1116,6 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
                           "Citation needed", "Citation needed", "ETL/data-dictionary confirmation needed")
   )
   
-  message("---- Respiratory-threshold decisions ----")
-  print(respiratory_threshold_decisions, n = Inf, width = Inf)
   
 # =============================================================================
 # Combined Script 02 summaries
@@ -1204,11 +1173,7 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
   ) %>%
     arrange(data_domain, data_element, threshold_rule)
   
-  message("---- Combined Script 02 dropout summary ----")
-  print(script02_dropout_summary, n = Inf, width = Inf)
   
-  message("---- Rules causing complete data loss ----")
-  print(script02_complete_loss_rules, n = Inf, width = Inf)
   
 # =============================================================================
 # Build the complete Script 02 diagnostic section required by the QMD
@@ -1274,6 +1239,7 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
 # Save cleaned outputs
 # =============================================================================
   
+  message("Script 02 | saving cleaned outputs and validating diagnostics")
   summary_stats_dir <- file.path(output_dir, "summary_stats")
   dir.create(summary_stats_dir, recursive = TRUE, showWarnings = FALSE)
   
@@ -1429,6 +1395,4 @@ message("Cohort diagnostic directory: ", diagnostic_dir)
     stop("At least one saved Script 02 post-intubation tidal-volume integrity check failed.")
   }
   
-  message("Script 02 diagnostics added to: ", diagnostic_rds_path)
-  message("Top-level diagnostic sections: ", paste(names(diagnostic_readback), collapse = ", "))
-  message("Script 02 complete. Cleaned data and report-ready diagnostics saved.")
+  message("Script 02 complete.")
