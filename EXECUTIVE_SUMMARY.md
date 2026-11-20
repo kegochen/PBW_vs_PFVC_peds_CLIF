@@ -23,9 +23,10 @@ an explicit override. Separate version 3a dependency restoration has not been
 tested. The completed short-path Windows restoration test remains version 3
 baseline evidence.
 
-The published repository contains shared code, templates, references, and the
-lockfile. Version 3a publication is pending. Site data and generated results
-remain local.
+Version 3a is published on `main` at commit
+`feaa203408e0e8688213c548590b3c3612fa7d34`; version 3 is preserved on branch
+`v3`. Shared code, templates, references, and the lockfile are published.
+Site data and generated results remain local.
 
 ## Cohort and scientific definitions
 
@@ -204,8 +205,10 @@ injury-stage workflows are not implemented.
 
 ## Remaining work
 
-Complete version 3a publication and the focused neurologic evidence review
-before buddy-site testing. Buddy-site testing remains deferred.
+Version 3a publication and the focused neurologic evidence review are complete.
+The [Neurologic interaction rationale](reference-data/ccc_interaction_rationale.md)
+describes physiological plausibility without claiming direct validation of
+the tested interaction. Buddy-site testing remains deferred.
 
 Pooled exploratory analyses and the separate growth-method/interpolation
 comparison remain deferred until buddy-site testing is complete. Retained

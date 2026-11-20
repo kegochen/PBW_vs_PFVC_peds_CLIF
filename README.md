@@ -38,10 +38,16 @@ The runner uses separate R subprocesses and collects unused parent-process
 memory after each successful analysis script. Reporting controls nested R
 startup and library routing and calls `gc()` between validated report renders.
 
-The published repository contains shared code, configuration templates,
-references, and the lockfile; site data and generated results remain local.
-Version 3a publication is pending. Buddy-site testing, pooled exploratory
-analyses, and the separate growth-method comparison remain deferred.
+Version 3a is published on `main` at commit
+`feaa203408e0e8688213c548590b3c3612fa7d34`. Version 3 is preserved on branch
+`v3`. The repository contains shared code, configuration templates, references,
+and the lockfile; site data and generated results remain local.
+
+The [Neurologic interaction rationale](reference-data/ccc_interaction_rationale.md)
+documents the clinical motivation and limits of that exploratory analysis.
+Buddy-site testing remains deferred. Pooled exploratory analyses and the
+separate growth-method comparison remain deferred until buddy-site testing
+is complete.
 
 ## Repository structure
 
