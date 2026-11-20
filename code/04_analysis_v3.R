@@ -3927,13 +3927,13 @@ km_ratio_specs <- list(
     ratio = "nchspfvc",
     label = "NCHS weight/PFVC",
     output_stub = "nchs_weight_pfvc",
-    palette = c("#009E73", "#0072B2", "#D55E00")
+    palette = c("#CC5555", "#266CAE", "#D47E0E")
   ),
   actual = list(
     ratio = "abwpfvc",
     label = "ABW/PFVC",
     output_stub = "abw_pfvc",
-    palette = c("#CC79A7", "#0072B2", "#E69F00")
+    palette = c("#CC5555", "#266CAE", "#D47E0E")
   )
 )
 

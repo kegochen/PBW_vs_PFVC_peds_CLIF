@@ -5,38 +5,27 @@ Longitudinal ICU data Format (CLIF) study comparing predicted body weight
 (PBW) and predicted forced vital capacity (PFVC) normalization of respiratory
 physiology measures.
 
-For a high-level description of the pediatric cohort, analysis workflow,
-outputs, and interpretation limits, see the
-[Executive summary](EXECUTIVE_SUMMARY.md). It describes the implementation,
-locally verified execution status, and remaining validation limits.
-It is not an approved study protocol.
+See the [Executive summary](EXECUTIVE_SUMMARY.md) for the study question,
+cohort definitions, and analysis workflow.
 
 ## Current status
 
-This repository supports local single-site execution with shared code
-distributed through GitHub.
+The full analysis and three-report workflow completed in one Windows RStudio
+session. PDF publication, the normalization report-inclusive manifest, and
+reporting-status synchronization passed readback checks. Report layouts were
+visually reviewed.
 
-A complete single-session analysis-and-reporting invocation returned
-successfully in the local Windows development environment. Scripts 01–05
-completed sequentially, followed by all three diagnostic reports. The renderer
-validated staged PDFs, published the final PDFs, validated the normalization
-report-inclusive manifest, and read back and synchronized reporting status
-into model QC. All three diagnostic-report layouts were previously visually
-accepted.
+Windows restoration passed in a separate short-path test copy. The test library
+contained 186 packages; eight lockfile packages were supplied by R's system
+library. All 194 versions and the pinned GitHub commit matched, and all 36
+declared dependencies loaded.
 
-The successful invocation used parent-session garbage collection after each
-analysis subprocess returned. Earlier attempts experienced intermittent
-subprocess failures. One successful invocation does not establish that
-garbage collection caused the improvement or guarantee future reliability.
+The runner uses separate R subprocesses and calls `gc()` after each analysis
+script to collect unused parent-session memory. The full pipeline completed
+successfully after this change, which is retained in the standard workflow.
 
-Dependency loading and lockfile coverage have been checked locally.
-Cross-platform dependency restoration remains unvalidated.
-
-Do not interpret code availability, process completion, or computational checks
-as scientific validation, disclosure approval, or authorization to execute.
-
-GitHub hosts shared code, configuration templates, reference files, and the
-dependency lockfile—not site data or analysis results. Cross-site pooling is
+GitHub contains shared code, configuration templates, references, and the
+lockfile. Site data and generated results remain local. Cross-site pooling is
 not implemented.
 
 ## Repository structure
@@ -60,35 +49,34 @@ Preserve filename capitalization when moving to case-sensitive systems.
 
 ## Dependencies
 
-The recorded environment uses R 4.6.1 and `renv`. The root `.Rprofile` sources
-`renv/activate.R`, so opening the project can activate its package environment.
+Use R 4.6.1 and the recorded `renv.lock` environment. Opening the `.Rproj`
+sources `renv/activate.R` through the root `.Rprofile`.
 
-`DESCRIPTION` declares 36 direct dependencies. `callr` provides isolated
-subprocess execution. `algorithmDiagnostics` is pinned to GitHub commit:
+On Windows, use a short checkout path, for example
+`C:/projects/PBW_vs_PFVC_peds_CLIF`. A long-path restoration test produced an
+inaccessible 263-character package-header path; the short-path test restored
+successfully.
 
-`1cd593b613fd0aa68c937eedad97767ee1ea6f11`
+`DESCRIPTION` declares 36 direct dependencies. `algorithmDiagnostics` is pinned
+to commit `1cd593b613fd0aa68c937eedad97767ee1ea6f11`.
 
-A collaborator must restore the project environment before running the workflow.
-Restoration can download packages and write to the project library and renv
-cache. It is a separate setup action, not part of the runner.
-
-After approving that setup action, run from the repository root:
+From the repository root, restore dependencies before running the pipeline:
 
 ```r
 renv::restore(prompt = TRUE)
 ```
 
-Do not substitute an unrestricted update or snapshot for restoration of the
-recorded environment.
+Restoration downloads packages and writes to the project library and package
+cache. It is separate from analysis execution. Keep the lockfile unchanged;
+do not substitute a package update or new snapshot for restoration.
 
-PDF reporting additionally requires the external Quarto command-line executable
-and a working TeX installation. Installing the R package `quarto` alone does not
-provide both external prerequisites. The reporting utility does not install
-software.
+This project supports Windows execution. The restoration test used an
+existing R installation and restoration tools with a separate package
+library and cache.
 
-The development machine has Quarto 1.10.19 and TinyTeX available.
-All three diagnostic PDFs have rendered successfully in that environment.
-This does not establish successful rendering on another system.
+PDF reporting requires the Quarto command-line executable and a working TeX
+installation in addition to the R package `quarto`. The tested environment
+used Quarto 1.10.19 and TinyTeX. The runner does not install software.
 
 ## Site configuration
 
@@ -193,92 +181,108 @@ and the existing age-dependent windows. Supplemental measurement dates remain
 unparsed source text for provenance and do not determine donor eligibility.
 Do not invent measurement times.
 
-## Execution: analysis and reporting are separate
+### Supplemental source representation and precision
 
-The examples below are for separately authorized local execution.
-Loading definitions, running analysis, and rendering reports are distinct
-actions. Do not rerun a completed workflow merely to inspect its status.
+The development-site supplemental source is described as individual height
+measurements in centimeters. `height_dttm` is the measurement timestamp,
+formatted as `YYYY-MM-DD HH24:MI:SS`, in Eastern local time with daylight-saving
+adjustment. No conversion, rounding, truncation, or reformatting before export
+was reported. Each site should confirm its source contract.
 
-From the repository root, load the runner definitions:
+Measurement dates remain unparsed provenance. Donor windows use hospitalization
+admission timestamps. The supplemental Eastern-time convention is separate
+from the CLIF UTC-export convention.
 
-```r
-source("code/00_run_pipeline_v3.R")
-```
+CSV tests passed for date-only, fractional-second, whitespace-containing,
+invalid-date, and missing representations. Parquet tests passed for character
+dates, typed timestamps, and an absent date column. Tests also covered row order,
+numeric-height handling, linkage exclusions, and missing-date eligibility.
 
-Sourcing this file defines functions only. It does not start analysis or reporting.
+`height_text` is cleaned text. For Parquet, `height_dttm_raw` is a character
+representation of the decoded column, not the original lexical field.
+Future use of measurement timestamps for matching would require an explicit
+timezone and daylight-saving transition policy.
 
-### Standard end-to-end invocation
+## Execution
 
-Use a fresh RStudio session opened through the repository `.Rproj`, with the
-validated configuration and existing project dependencies. After local
-analysis and reporting execution are authorized, run this block once:
+Open a fresh RStudio session through the repository `.Rproj`. Configure the site
+and restore dependencies before execution.
+
+### Full workflow
+
+Run this block once from the repository root:
 
 ```r
 source("code/00_run_pipeline_v3.R")
 analysis_result <- NULL
 reporting_result <- NULL
+
 local({
   analysis_result <<- run_pbwpfvc_analysis()
   reporting_result <<- run_pbwpfvc_reports()
 })
 ```
 
-An analysis error stops the block before reporting starts. Analysis and
-reporting remain separate functions, but the standard block invokes them
-in order within one parent session. A three-session split is not required
-by this standard.
+Sourcing the runner defines functions only. The block runs Scripts 01-05,
+then diagnostic reporting. An analysis error prevents reporting from starting.
 
-Existing analysis artifacts may be overwritten. Reporting retains its own
-run directory and backups. Do not automatically repeat a failed invocation;
-retain the error and inspect affected artifacts before choosing recovery.
+Scripts run sequentially in separate R processes using the project and base R
+libraries, with system and user profiles disabled. The parent calls `gc()` after
+each successful script return.
 
-### Analysis
-
-After execution is authorized:
+### Separate analysis or reporting
 
 ```r
-run_pbwpfvc_analysis()
+source("code/00_run_pipeline_v3.R")
+analysis_result <- run_pbwpfvc_analysis()
 ```
 
-The runner executes Scripts 01–05 sequentially in separate R processes using
-the project library and base R library. User and system profiles are disabled
-in those child processes. After each successful subprocess return, the parent
-R session calls `gc()` before continuing, including before reporting after
-Script 05. This requests collection of unused parent-session R memory; it
-does not remove live analysis objects, guarantee memory release to the
-operating system, or establish the cause of earlier subprocess failures.
-
-The runner stops at the first error. Earlier and partial outputs remain;
-existing analysis artifacts may have been overwritten by the scripts. It does
-not automatically retry, delete outputs, render diagnostic reports, install
-packages, pool sites, or use Git.
-
-Successful subprocess return means process completion, not independent
-scientific validation.
-
-### Diagnostic PDF reporting
-
-After analysis prerequisites are complete and reporting is separately authorized:
+Once saved analysis prerequisites are complete, render reports without
+rerunning analysis:
 
 ```r
-run_pbwpfvc_reports()
+reporting_result <- run_pbwpfvc_reports()
 ```
 
-Reporting consumes saved diagnostic RDS files and repository QMDs without
-refitting models. It produces cohort, analysis, and normalization diagnostic PDFs.
+Reporting reads saved diagnostics and repository QMDs without refitting models.
+It produces cohort, analysis, and normalization PDFs.
 
-Each invocation retains a unique run directory under `final/reports`, including
-render artifacts and backups. Existing final PDFs are backed up before
-replacement. The utility performs no explicit file deletion.
+### Warnings
 
-The PDFs describe the diagnostic snapshot read before rendering. In particular,
-a normalization PDF can show reporting pending while the subsequently saved
-diagnostic RDS records successful rendering and validation.
+Each analysis invocation retains an `analysis_warning_run_*` directory under
+the model-diagnostic directory. Per-script CSVs contain the warning sequence,
+UTC timestamp, script, condition class, message, and call. Scripts with no
+captured warnings retain a header-only CSV.
 
-Rendering, publication, diagnostic status updates, and model-QC synchronization
-are multiple operations, not an atomic transaction. An error can leave partial
-outputs or partially updated diagnostic artifacts. Inspect the reported error
-and retained run files before considering a retry.
+Warnings remain visible. Synthetic tests passed for warnings before and after
+global-workspace clearance, zero-warning scripts, and logging failures.
+If warning retention fails, the child stops and later scripts do not run.
+
+Warnings suppressed inside script code may not reach the handler. A hard crash
+can interrupt a write. Previous child warnings cannot be recovered through
+parent-session `warnings()`. This capture covers analysis, not report rendering.
+Warning logs may contain paths or data values and are not part of the analysis
+output manifest.
+
+### Failure and recovery
+
+The runner stops at the first failure and does not retry automatically.
+Earlier and partial outputs remain; analysis scripts may overwrite existing
+artifacts. Retain the error and last checkpoint before choosing recovery.
+Do not rerun analysis just to inspect saved status.
+
+Each reporting invocation retains a unique directory under `final/reports`,
+including staged sources, render files, results, and backups. Existing final
+PDFs are backed up before replacement. The utility performs no explicit deletion.
+
+PDFs describe the pre-render diagnostic snapshot. The normalization PDF may
+show reporting pending while the subsequently saved RDS records completion.
+
+Publication, status updates, and model-QC synchronization are separate writes.
+A failure can leave partial publication or disagreement between artifacts.
+Inspect retained files and backups before retrying.
+
+The runner does not install packages, pool sites, or use Git.
 
 ## Local output layout
 
@@ -314,59 +318,49 @@ Reporting completion is recorded after PDF and manifest validation, then the
 normalization diagnostic section is synchronized into the latest model-QC RDS
 while preserving unrelated sections.
 
-## Scientific interpretation
+## Analysis definitions
 
-The cohort targets ages 3 to under 18 and retains the latest eligible
-hospitalization per patient. Clinical thresholds, derivation rules, model
-specifications, and sample policies are retained in the scripts and diagnostics.
+The cohort includes ages 3 to under 18 and the latest eligible hospitalization
+per patient. Scripts and diagnostics record thresholds, derivations, model
+specifications, and analysis-specific sample policies.
 
-Important interpretation limits include:
+Key interpretation points:
 
 - PBW/PFVC is a unit-bearing conversion factor, not measured lung volume.
-- Cohort-relative terciles are not validated clinical injury thresholds.
-- PIP-derived driving-pressure fallbacks are not equivalent to plateau-derived
-  static driving pressure.
-- Apparent in-sample discrimination and AIC comparisons are exploratory.
+- Terciles are cohort-relative categories, not clinical injury thresholds.
+- PIP-derived fallback driving pressure differs from plateau-derived static
+  driving pressure.
+- AIC and apparent in-sample discrimination are exploratory comparisons.
 - Odds ratios are not risk ratios.
-- Fine–Gray subdistribution hazard ratios are not changes in ventilator-free days.
-- Computational stability does not establish causal identification, clinical
-  validity, or a preferred normalization policy.
-- Events-per-parameter criteria are interpretation or visualization heuristics,
-  not blanket disclosure rules or absolute validity boundaries.
+- Fine-Gray subdistribution hazard ratios are not changes in ventilator-free days.
+- Events-per-parameter criteria guide interpretation or curve display; they do
+  not apply blanket cell suppression.
 
-Sites must verify that their respiratory mappings represent equivalent clinical
-concepts, including the prescribed-target interpretation of set PIP.
+Sites must verify equivalent respiratory mappings, including the prescribed-target
+interpretation of set PIP.
 
-## Disclosure and sharing
+## Data and outputs
 
-Outputs and detailed diagnostics require review before any sharing.
-Some local diagnostics and report tables may contain patient or hospitalization
-identifiers. No report or artifact bundle has been established as wholly
-identifier-free or approved for disclosure.
+Intermediate datasets, diagnostic RDS files, and some report tables can contain
+patient or hospitalization identifiers. Figures may include individual points
+or small groups. Keep these artifacts local and review specific files before
+sharing.
 
-There is no implemented cross-site pooling or automatic results-upload workflow.
 Do not commit site data, active configuration, generated outputs, or diagnostic
-RDS files to GitHub.
+RDS files to GitHub. There is no automatic results-upload or cross-site pooling
+workflow.
 
-A prospective study or IRB summary describes intended behavior; it does not
-establish protocol approval, completed implementation, or privacy or security
-assurances.
+## Next steps
 
-## Outstanding validation
+- Test the generic Windows workflow against another site's CLIF exports.
+- Implement growth-method and interpolation comparisons as a separate script
+  after sites supply their data. This script is planned, not part of the
+  current pipeline.
 
-Successful local execution and reporting do not establish portability,
-independent scientific validation, or disclosure clearance.
-Remaining reviews include:
-
-- Participating-site CLIF schema, units, clinical mappings, and timestamp compatibility.
-- Supplemental measurement-date provenance and source precision.
-- Full growth-reference comparison and provenance.
-- Diagnostic preservation across future reruns.
-- Reporting failure paths and recovery behavior.
-- Cross-platform dependency restoration.
-- Reliability across repeated end-to-end invocations and other environments.
-- Review of analysis warning messages not captured in earlier runs.
-- Independent scientific validation and artifact-specific disclosure review.
+The current growth-reference CSVs match the official CDC downloads.
+Reference details are recorded in
+[Growth references](reference-data/growth/README.md).
 
 Study dates, participating sites, sample size, waivers, and access, retention,
 and sharing policies are not specified by this repository.
+

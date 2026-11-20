@@ -1137,23 +1137,6 @@ show_table(
 \EndDiagnosticLandscape
 ```
 
-## Rules causing complete vital-sign data loss
-
-```{r}
-vital_loss_rules <- qc02$vitals$dropout_rule_summary
-
-if (
-  is.null(vital_loss_rules) ||
-  nrow(vital_loss_rules) == 0L
-) {
-  show_note(
-    "No vital-sign category lost all usable data because of threshold cleaning."
-  )
-} else {
-  show_table(vital_loss_rules)
-}
-```
-
 ## Rules causing complete laboratory-data loss
 
 ```{r}
@@ -1200,6 +1183,23 @@ show_table(
 
 ```{=latex}
 \EndDiagnosticLandscape
+```
+
+## Rules causing complete vital-sign data loss
+
+```{r}
+vital_loss_rules <- qc02$vitals$dropout_rule_summary
+
+if (
+  is.null(vital_loss_rules) ||
+  nrow(vital_loss_rules) == 0L
+) {
+  show_note(
+    "No vital-sign category lost all usable data because of threshold cleaning."
+  )
+} else {
+  show_table(vital_loss_rules)
+}
 ```
 
 ## Exact-row deduplication

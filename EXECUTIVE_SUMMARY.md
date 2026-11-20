@@ -2,38 +2,31 @@
 
 ## Study question
 
-This retrospective pediatric study examines how predicted body weight (PBW)
-and predicted forced vital capacity (PFVC) normalization differ across
-demographic groups and how the resulting ventilation and respiratory-mechanic
-metrics associate with clinical outcomes.
-
-PBW and PFVC are predicted quantities. Their relationship does not establish
-measured lung volume, prediction accuracy, causal injury, or the clinical
-superiority of either normalization method.
+This retrospective pediatric study compares predicted body weight (PBW) and
+predicted forced vital capacity (PFVC) normalization across demographic groups
+and examines associations of normalized ventilation and respiratory-mechanic
+metrics with clinical outcomes. PBW and PFVC are formula-derived predictions,
+not measured lung volumes.
 
 ## Implementation status
 
-The repository has been refactored for local, single-site execution with shared
-code suitable for distribution through GitHub.
+The full single-site analysis and three-report workflow completed in one Windows
+RStudio session. Final PDF publication, the normalization report-inclusive
+manifest, and reporting-status synchronization passed readback checks. Report
+layouts were visually reviewed.
 
-A complete single-session invocation of Scripts 01–05 followed by diagnostic
-reporting returned successfully in the local Windows development environment.
-The renderer validated and published all three PDFs, validated the
-normalization report-inclusive manifest, and read back and synchronized
-reporting status into model QC. All three diagnostic-report layouts were
-previously visually accepted.
+A short-path Windows restoration installed 186 packages; eight lockfile packages
+were supplied by R's system library. All 194 versions and the pinned GitHub
+commit matched, and all 36 declared dependencies loaded. The test used an
+existing R installation and restoration tools. This project supports Windows
+execution.
 
-The successful invocation used parent-session garbage collection between
-analysis subprocesses. Earlier attempts experienced intermittent subprocess
-failures; their cause remains unproved. This success does not establish a
-causal garbage-collection fix or reliability across future invocations.
+The runner uses separate child processes and calls `gc()` between analysis
+scripts. The full pipeline completed successfully after this change, which
+is retained in the standard workflow.
 
-Dependency loading has been checked locally; cross-platform restoration
-remains unvalidated. Process completion, file integrity, and visual acceptance
-do not establish independent scientific validity or disclosure approval.
-
-The workflow below describes the implementation and its remaining limits.
-GitHub hosts code and reference material, not site results.
+GitHub contains shared code, configuration templates, references, and the
+lockfile. Site data and generated results remain local.
 
 ## Cohort and scientific definitions
 
@@ -109,73 +102,63 @@ terms. Additional analyses evaluate model-form comparisons, demographic
 modification, age/PFVC interaction ladders, balanced modifier models, and
 encompassing size models.
 
-Common samples are retained within the specified mechanic families. Apparent
-in-sample discrimination and AIC comparisons do not establish external
-validation or a preferred clinical normalization policy.
+Common complete-case samples are retained within mechanic families.
+Model comparisons report AIC, apparent in-sample discrimination, event counts,
+and computational diagnostics.
 
 ## Execution and dependencies
 
-`code/00_run_pipeline_v3.R` defines an analysis runner and a separate reporting
-runner. Loading that file does not start either workflow.
+Use a fresh session opened through the repository `.Rproj`. The README provides
+the full execution block: load `code/00_run_pipeline_v3.R`, run analysis, then
+render reports. Loading definitions starts neither workflow; an analysis error
+prevents reporting.
 
-The standard workflow uses a fresh repository `.Rproj` session and invokes
-analysis followed by reporting in one parent session. See the README for the
-complete execution block; an analysis error prevents reporting from starting.
+Scripts run sequentially in separate R processes. The parent calls `gc()` after
+each successful return. The runner stops on failure, retains existing or partial
+outputs, and does not retry automatically.
 
-Analysis scripts execute sequentially in isolated R subprocesses. The parent
-session calls `gc()` after each successful return. The runner stops at the
-first failure and retains existing or partial artifacts; it does not retry
-automatically. Garbage collection does not remove live objects or establish
-the cause of earlier failures.
+Restore the recorded `renv.lock` environment before execution. On Windows,
+use a short checkout path to avoid package-header path problems. Restoration
+downloads and installs packages; the analysis runner does not.
 
-Dependency restoration is a separate, explicitly approved setup action using
-`renv`; the runner does not install packages.
+Analysis warnings are retained per script in a unique local directory and remain
+visible. Logging failure stops the child. Suppressed warnings and writes
+interrupted by hard crashes may not be retained.
 
-Diagnostic PDFs are rendered separately from saved RDS diagnostics without
-refitting models. Reports describe the pre-render diagnostic snapshot.
-Reporting completion is recorded afterward following file and manifest
-validation.
+Quarto and TeX render the PDFs from saved diagnostics without refitting models.
+Reports show the pre-render snapshot. Each run retains staged files, results,
+and backups. Publication and diagnostic synchronization are separate writes;
+inspect retained evidence before recovering from a failure.
 
-Reporting operations are not atomic. A failure can leave partial publication
-or disagreement between diagnostic artifacts; retained backups and the
-original error must be reviewed before retrying.
+## Outputs
 
-## Outputs and disclosure
+- `intermediate/`: working and analysis datasets.
+- `diagnostics/cohort`, `diagnostics/table1`, and `diagnostics/models`: saved
+  diagnostics; analysis-warning runs are under the model-diagnostic directory.
+- `final/tables`, `final/figures`, and `final/reports`: analysis artifacts and PDFs.
+- `final/optional_diagnostics`: reserved destination; no automatic RDS export.
 
-Local outputs are organized under:
+Script 05 validates 19 analysis files: 14 CSVs and five PDFs. Reporting validates
+a 20-file normalization report-inclusive manifest: 14 CSVs and six PDFs.
+These are not whole-pipeline inventories.
 
-- `intermediate/`: row-level working and analysis datasets.
-- `diagnostics/cohort`, `diagnostics/table1`, and `diagnostics/models`:
-  detailed saved diagnostics.
-- `final/tables`, `final/figures`, and `final/reports`: analysis artifacts
-  and human-readable outputs.
-- `final/optional_diagnostics`: reserved optional diagnostic destination;
-  no automatic RDS export is implied.
-
-Script 05 maintains an analysis-only manifest of 19 files: 14 CSVs and
-5 analysis PDFs. Separate reporting validates a normalization report-inclusive
-manifest of 20 files: 14 CSVs and 6 PDFs. These are not whole-pipeline inventories.
-
-Minimum-group filters in selected distribution outputs are not blanket
-cell-suppression or disclosure clearance. Some diagnostics and report tables
-may contain identifiers. Neither the final directory nor the reports have
-been established as wholly identifier-free or approved for sharing.
+Some datasets, diagnostics, and report tables contain identifiers; figures may
+show individual points or small groups. Selected minimum-group filters are not
+blanket cell suppression. Keep site data, active configuration, generated
+outputs, and diagnostic RDS files out of GitHub.
 
 Cross-site pooling, control cohorts, and the adult study's longitudinal
-injury-stage workflows are not implemented in this pediatric repository.
+injury-stage workflows are not implemented.
 
-## Outstanding decisions and validation
+## Next steps
 
-Remaining work includes source precision and provenance review, full growth-file
-comparison, participating-site input column/unit and timestamp compatibility,
-cross-platform dependency restoration, reliability across repeated end-to-end
-invocations, reporting failure-path review, review of uncaptured analysis
-warnings, independent scientific validation, and artifact-specific disclosure
-review.
+The next generic test is another-site execution on Windows.
 
-Local analysis execution and the complete reporting workflow have succeeded;
-these remaining reviews must not be represented as already completed.
+Growth-method and interpolation comparisons will be implemented as a separate
+script after sites supply their data. This script is planned and is not part
+of the current pipeline. The current reference CSVs match the official CDC
+downloads; see [Growth references](reference-data/growth/README.md).
 
 Study dates, participating sites, sample size, waivers, and access, retention,
-and sharing policies remain unspecified. This document does not establish
-IRB approval, execution authorization, or privacy or security assurances.
+and sharing policies are not specified here.
+

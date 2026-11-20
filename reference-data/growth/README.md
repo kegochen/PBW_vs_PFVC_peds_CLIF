@@ -16,9 +16,28 @@ The CDC documentation describes the relevant older-child references as part
 of the 2000 CDC Growth Charts and states that the data remain unchanged from
 the initial May 30, 2000 release.
 
-The original download date was not supplied. Complete equivalence between
-the repository files and the official source files has not yet been verified.
-The source citation is not a checksum or proof of file identity.
+The original download date was not supplied and remains unknown.
+
+## Complete file comparison
+
+On November 19, 2026, both repository CSVs were compared with newly retrieved
+official CDC files:
+
+- [Stature-for-age CSV](https://www.cdc.gov/growthcharts/data/zscore/statage.csv)
+- [Weight-for-age CSV](https://www.cdc.gov/growthcharts/data/zscore/wtage.csv)
+
+Both comparisons passed: each file contained 436 rows, and byte-level MD5
+checksums, column names, dimensions, row order, and all parsed column values
+were identical. The comparison used the pipeline's existing base R
+`read.csv()` parsing behavior and no numerical tolerance.
+
+The downloaded files, retrieval timestamps, checksums, and complete comparison
+results were retained in a local audit directory outside the repository.
+Repository reference files were not replaced or modified.
+
+This establishes equivalence to the CDC files retrieved for that comparison,
+not the original download date, scientific suitability of the prediction
+methods, or an independently approved interpolation policy.
 
 ## Fields used by this pipeline
 
@@ -28,9 +47,9 @@ Script 03 requires:
 - `Agemos`: reference age in months.
 - `M`: median reference measurement.
 
-The supplied file excerpts also include LMS parameters and percentile columns.
-In the reviewed excerpts, `M` equals `P50`. That excerpt review does not
-validate every row in either file.
+Both files also include LMS parameters and percentile columns. The complete
+comparison confirmed that `M` equals `P50` throughout each repository file
+and its corresponding CDC download.
 
 ## Scientific use
 
