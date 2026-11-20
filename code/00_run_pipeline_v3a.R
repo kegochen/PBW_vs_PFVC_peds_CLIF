@@ -79,7 +79,14 @@ pbwpfvc_runner_context <- function(
     stop("callr is required. No installation was attempted.")
   }
   
-  project_library <- renv::paths$library(project = repo_root)
+  # Optional development override; default remains this repository's project library.
+  project_library_override <- Sys.getenv("PBWPFVC_PROJECT_LIBRARY", unset = "")
+  
+  project_library <- if (nzchar(trimws(project_library_override))) {
+    path.expand(project_library_override)
+  } else {
+    renv::paths$library(project = repo_root)
+  }
   
   if (!dir.exists(project_library)) {
     stop("Project library not found: ", project_library)
@@ -101,17 +108,36 @@ pbwpfvc_runner_context <- function(
 
 run_pbwpfvc_analysis <- function(
     repo_root = Sys.getenv("PBWPFVC_REPO_ROOT", unset = ""),
-    config_path = Sys.getenv("PBWPFVC_CONFIG_PATH", unset = "")
+    config_path = Sys.getenv("PBWPFVC_CONFIG_PATH", unset = ""),
+    last_script = 5L,
+    first_script = 1L
 ) {
+  valid_script_number <- function(x) {
+    is.numeric(x) && length(x) == 1L &&
+      !is.na(x) && is.finite(x) && x %in% seq_len(5L)
+  }
+  
+  if (!valid_script_number(first_script) || !valid_script_number(last_script)) {
+    stop("first_script and last_script must each be one integer from 1 through 5.")
+  }
+  
+  if (first_script > last_script) {
+    stop("first_script must not exceed last_script.")
+  }
+  
   context <- pbwpfvc_runner_context(repo_root, config_path)
   
   script_names <- c(
-    "01_cohort_identification_v3.R",
-    "02_quality_checks_v3.R",
-    "03_variable_derivation_v3.R",
-    "04_analysis_v3.R",
-    "05_normalization_analysis_v3.R"
+    "01_cohort_identification_v3a.R",
+    "02_quality_checks_v3a.R",
+    "03_variable_derivation_v3a.R",
+    "04_analysis_v3a.R",
+    "05_normalization_analysis_v3a.R"
   )
+  
+  script_names <- script_names[
+    seq.int(as.integer(first_script), as.integer(last_script))
+  ]
   
   script_paths <- file.path(context$config$repo_root, "code", script_names)
   

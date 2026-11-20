@@ -230,6 +230,40 @@ if (length(directory_script04_input_paths) > 0L) {
 cross_sectional <- read_parquet(file.path(output_dir, "analysis_cross_sectional.parquet"))
 analysis_all <- read_parquet(file.path(output_dir, "analysis_all_timepoints.parquet"))
 
+# Script 03 supplies the hospitalization-level CCC indicators in analysis outputs.
+ccc_vars <- c(
+  "ccc_neuro_mechanics", "ccc_neuro_other", "ccc_resp_chronic_malformation",
+  "ccc_resp_other", "ccc_asthma", "ccc_resp_technology"
+)
+
+for (input_name in c("cross_sectional", "analysis_all")) {
+  input_data <- get(input_name, inherits = FALSE)
+  missing_ccc_columns <- setdiff(ccc_vars, names(input_data))
+  
+  if (length(missing_ccc_columns) > 0L) {
+    stop(
+      input_name, " is missing CCC columns: ",
+      paste(missing_ccc_columns, collapse = ", "),
+      ". Regenerate the analysis inputs with Script 03."
+    )
+  }
+  
+  ccc_values_valid <- vapply(
+    input_data[ccc_vars],
+    function(x) is.numeric(x) && all(is.na(x) | x %in% c(0L, 1L)),
+    logical(1)
+  )
+  
+  if (!all(ccc_values_valid)) {
+    stop(
+      input_name, " CCC indicators must be numeric 0, 1, or NA: ",
+      paste(ccc_vars[!ccc_values_valid], collapse = ", ")
+    )
+  }
+}
+
+rm(input_name, input_data, missing_ccc_columns, ccc_values_valid)
+
 message("Cross-sectional: ", nrow(cross_sectional), " observations")
 message("All timepoints: ", nrow(analysis_all), " observations")
 
@@ -858,13 +892,17 @@ table1_data <- table1_source %>%
     pbwpfvc_tercile, age_at_admission, sex_category, race_category, height_cm,
     pbw, pbw_nchs, abw, pfvc, sofa_total, sf_ratio, mortality_event_60,
     vtpbw, vtnchs, vtabw, vtpfvc, pbwpfvc, nchspfvc, abwpfvc,
-    crs, ers, vfd_28
+    crs, ers, vfd_28, all_of(ccc_vars)
   ) %>%
   mutate(
     mortality_event_60 = factor(
       mortality_event_60,
       levels = c(0, 1),
       labels = c("Alive at 60 days", "Deceased by 60 days")
+    ),
+    across(
+      all_of(ccc_vars),
+      ~ factor(.x, levels = c(0L, 1L), labels = c("Absent", "Present"))
     )
   )
 
@@ -876,7 +914,14 @@ table1 <- table1_data %>%
       all_categorical() ~ "{n} ({p}%)"
     ),
     digits = list(all_continuous() ~ 1, all_categorical() ~ c(0, 1)),
+    type = list(all_of(ccc_vars) ~ "categorical"),
     label = list(
+      ccc_neuro_mechanics ~ "Mechanics-relevant neurologic/neuromuscular disease",
+      ccc_neuro_other ~ "Other neurologic disease",
+      ccc_resp_chronic_malformation ~ "Chronic respiratory disease/malformations",
+      ccc_resp_other ~ "Other respiratory disease",
+      ccc_asthma ~ "Asthma",
+      ccc_resp_technology ~ "Present-on-admission respiratory technology evidence",
       age_at_admission ~ "Age (years)",
       sex_category ~ "Sex",
       race_category ~ "Race",
@@ -923,6 +968,25 @@ table1_gt <- table1 %>%
       "Continuous variables are reported as median (25th, 75th percentile); categorical variables are reported as n (%). ",
       "Continuous-variable P values use the Kruskal-Wallis test. Missing values are displayed when present. ",
       "PBW/PFVC terciles were created using dplyr::ntile()."
+    )
+  ) %>%
+  tab_source_note(
+    source_note = paste0(
+      "Condition groups use diagnoses present on admission during the index hospitalization and may overlap. ",
+      "They are study-specific groupings based on the pediatric Complex Chronic Conditions version 3 framework, ",
+      "with asthma added separately. "
+    )
+  ) %>%
+  tab_source_note(
+    source_note = paste0(
+      "Mechanics-relevant neurologic/neuromuscular disease includes cerebral palsy, muscular dystrophies, ",
+      "myopathies, selected movement disorders, and selected scoliosis types. ",
+      "Other neurologic disease includes the remaining neurologic conditions in the framework. ",
+      "Chronic respiratory disease/malformations includes chronic lung disease and congenital respiratory abnormalities. ",
+      "Other respiratory disease includes cystic fibrosis and lung or heart-lung transplant-related diagnoses. ",
+      "Asthma includes all coded asthma types. ",
+      "Respiratory technology evidence includes tracheostomy, respirator or ventilator dependence, ",
+      "and related care or complications; it does not necessarily indicate home invasive ventilation."
     )
   )
 
@@ -981,6 +1045,18 @@ message("Final Table 1 diagnostics added to: ", table1_qc_path)
 # themselves, imply that either set is a sufficient causal adjustment set.
 covariates <- "race_category + age_at_admission + sex_category + sofa_total + sf10"
 covariates_unadj <- "sofa_total + sf10"
+
+# CCC sensitivity supplements, but does not replace, the primary adjustment set.
+ccc_covariates <- paste(ccc_vars, collapse = " + ")
+
+ccc_regression_labels <- c(
+  ccc_neuro_mechanics = "Mechanics-relevant neurologic/neuromuscular disease",
+  ccc_neuro_other = "Other neurologic disease",
+  ccc_resp_chronic_malformation = "Chronic respiratory disease/malformations",
+  ccc_resp_other = "Other respiratory disease",
+  ccc_asthma = "Asthma",
+  ccc_resp_technology = "Present-on-admission respiratory technology evidence"
+)
 
 # Readable labels for covariates in rendered regression tables. Age is modeled per year; SF ratio is modeled per 10 units.
 covar_labels <- list(age_at_admission ~ "Age at admission (per year)", sf10 ~ "SF ratio (per 10)")
@@ -1202,27 +1278,38 @@ sf10_derivation_valid <- any(sf10_compared) &&
   is.finite(sf10_max_absolute_difference) &&
   sf10_max_absolute_difference <= 1e-12
 
-model_covariate_complete_cases <- tibble(
-  adjustment_set = c("Primary adjusted", "Minimally adjusted", "Primary adjusted plus BMI"),
-  variables = c(
-    "race_category + age_at_admission + sex_category + sofa_total + sf10",
-    "sofa_total + sf10",
-    "race_category + age_at_admission + sex_category + sofa_total + sf10 + bmi"
+# Summarize adjustment availability under the final six-indicator completeness policy.
+adjustment_availability_sets <- list(
+  "Primary adjusted" = c(
+    "race_category", "age_at_admission", "sex_category", "sofa_total", "sf10",
+    ccc_vars
   ),
-  n_complete = c(
-    sum(complete.cases(cross_sectional[c(
-      "race_category", "age_at_admission", "sex_category", "sofa_total", "sf10"
-    )])),
-    sum(complete.cases(cross_sectional[c("sofa_total", "sf10")])),
-    sum(complete.cases(cross_sectional[c(
-      "race_category", "age_at_admission", "sex_category", "sofa_total", "sf10", "bmi"
-    )]))
+  "Minimally adjusted" = c("sofa_total", "sf10", ccc_vars),
+  "Primary adjusted plus BMI" = c(
+    "race_category", "age_at_admission", "sex_category", "sofa_total", "sf10", "bmi",
+    ccc_vars
   )
+)
+
+model_covariate_complete_cases <- purrr::imap_dfr(
+  adjustment_availability_sets,
+  function(column_names, adjustment_name) {
+    complete_n <- sum(complete.cases(cross_sectional[column_names]))
+    
+    tibble(
+      adjustment_set = adjustment_name,
+      variables = paste(column_names, collapse = " + "),
+      n_complete = complete_n,
+      n_total = nrow(cross_sectional)
+    )
+  }
 ) %>%
   mutate(
-    n_total = nrow(cross_sectional), n_excluded = n_total - n_complete,
+    n_excluded = n_total - n_complete,
     pct_complete = 100 * n_complete / n_total
   )
+
+rm(adjustment_availability_sets)
 
 model_covariate_checks <- list(
   required_covariates_present = length(missing_model_covariates) == 0L,
@@ -1298,6 +1385,23 @@ uses_dp <- function(...) {
 model_covariates <- function(..., adjusted = TRUE) {
   base <- if (adjusted) covariates else covariates_unadj
   if (uses_dp(...)) paste(base, "+ bmi") else base
+}
+
+# Final continuous-outcome CCC adjustment preserves the existing BMI rule.
+# These are agreed formula exceptions, not automatic sparse-term selection.
+continuous_model_covariates <- function(outcome, adjusted = TRUE) {
+  omitted <- if (outcome %in% c("mechanical_power", "mp_pbw", "mp_pfvc")) {
+    c("ccc_resp_other", "ccc_resp_technology")
+  } else {
+    "ccc_resp_other"
+  }
+  
+  included <- setdiff(ccc_vars, omitted)
+  
+  paste(
+    model_covariates(outcome, adjusted = adjusted),
+    "+", paste(included, collapse = " + ")
+  )
 }
 
 # Define all exposure specifications.
@@ -1490,14 +1594,28 @@ stopifnot(file.exists(model_qc_path), isTRUE(all(unlist(model_qc$checks))))
 message("Mortality-outcome QC added to: ", model_qc_path)
 
 # Use one common complete-case sample for all adjusted mortality models so likelihoods and AIC values are comparable.
-mortality_analysis_vars <- unique(c(
-  mortality_outcome, exposure_vars, all.vars(as.formula(paste("~", covariates)))
-))
+# Final mortality adjustment retains four CCC terms.
+# All six indicators remain in the agreed common-sample completeness policy.
+mortality_ccc_included <- c(
+  "ccc_neuro_mechanics", "ccc_neuro_other",
+  "ccc_resp_chronic_malformation", "ccc_asthma"
+)
+mortality_primary_covariates <- paste(
+  covariates, "+", paste(mortality_ccc_included, collapse = " + ")
+)
 
+mortality_analysis_vars <- unique(c(
+  mortality_outcome, exposure_vars,
+  all.vars(as.formula(paste("~", mortality_primary_covariates))),
+  ccc_vars
+))
 mortality_analysis_data <- cross_sectional %>%
   mutate(.source_row = row_number()) %>%
   select(.source_row, all_of(mortality_analysis_vars)) %>%
   drop_na(all_of(mortality_analysis_vars))
+
+# Primary mortality models use the final CCC-complete sample directly.
+# Retained interaction models reuse this sample later in the script.
 
 mortality_sample_qc <- mortality_analysis_data %>%
   summarise(
@@ -1550,8 +1668,16 @@ message("Mortality common-sample QC added to: ", model_qc_path)
 
 if (has_mortality_variation) {
   mortality_models <- map(exposure_specs, function(exposure_spec) {
-    formula_str <- paste(mortality_outcome, "~", exposure_spec, "+", model_covariates(exposure_spec))
-    glm(as.formula(formula_str), data = mortality_analysis_data, family = binomial)
+    formula_str <- paste(
+      mortality_outcome, "~", exposure_spec, "+", mortality_primary_covariates
+    )
+    
+    glm(
+      as.formula(formula_str),
+      data = mortality_analysis_data,
+      family = binomial,
+      na.action = na.fail
+    )
   })
   
   mortality_model_qc <- purrr::imap_dfr(mortality_models, function(model, model_name) {
@@ -1724,6 +1850,8 @@ if (has_mortality_variation) {
     sf10 = "SF ratio (per 10)"
   )
   
+  mortality_regression_labels <- c(mortality_regression_labels, ccc_regression_labels)
+  
   mortality_tables <- map(mortality_models, function(model) {
     tbl_regression(model, exponentiate = TRUE) %>%
       modify_table_body(function(table_body) {
@@ -1757,8 +1885,11 @@ if (has_mortality_variation) {
       source_note = paste0(
         "All models use the same complete-case sample: N = ", nrow(mortality_analysis_data), ", including ",
         mortality_sample_qc$n_events, " deaths by 60 days. Estimates are odds ratios with 95% confidence intervals. ",
-        "Models adjust for age, sex, race, pSOFA total, and SF ratio per 10 units."
-      )
+        "Models adjust for age, sex, race, pSOFA total, SF ratio per 10 units, ",
+        "mechanics-relevant neurologic/neuromuscular disease, other neurologic disease, ",
+        "chronic respiratory disease/malformations, and asthma. ",
+        "Other respiratory disease and respiratory technology are not included because ",
+        "their mortality coefficients were not reliably estimable in the development-site analysis."      )
     ) %>%
     tab_source_note(
       source_note = paste0(
@@ -1807,6 +1938,552 @@ if (has_mortality_variation) {
 }
 
 # =============================================================================
+# Final mortality CCC policy and interaction-reference compatibility
+# =============================================================================
+# Reuse the primary fits; no additional reference or adjustment fits are performed.
+
+mortality_ccc_analysis_data <- mortality_analysis_data
+
+# Existing interaction blocks access the primary reference through this structure.
+# These entries reference the fitted primary models; they do not refit them.
+mortality_ccc_models <- purrr::map(
+  mortality_models,
+  function(model) list(ccc_adjusted = model)
+)
+
+model_qc$ccc_sensitivity <- list(
+  classification = cohort_diagnostics$resp_mechanics_ccc$provenance,
+  mortality = list(
+    formula_policy = list(
+      included_ccc_terms = mortality_ccc_included,
+      omitted_ccc_terms = setdiff(ccc_vars, mortality_ccc_included),
+      omission_reason = paste0(
+        "Other respiratory disease and respiratory technology were omitted ",
+        "after sparse-event non-estimability in the development-site mortality analysis."
+      )
+    ),
+    sample_source_rows = mortality_analysis_data$.source_row,
+    primary_adjustment_formula = mortality_primary_covariates
+  )
+)
+
+# Primary mortality coefficients are retained in the existing model diagnostics and unified outputs.
+
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+# =============================================================================
+# Asthma interaction sensitivity: 60-day mortality
+# =============================================================================
+# Four exploratory single-exposure models; no change to existing adjustment fits.
+# Reuse the CCC-complete sample and current mortality adjustment policy.
+
+asthma_interaction_exposures <- c("vtpbw", "vtnchs", "vtabw", "vtpfvc")
+
+mortality_asthma_models <- purrr::map(
+  asthma_interaction_exposures,
+  function(exposure) {
+    reference_model <- mortality_ccc_models[[exposure]]$ccc_adjusted
+    interaction_formula <- update.formula(
+      formula(reference_model),
+      paste(". ~ . +", paste0(exposure, ":ccc_asthma"))
+    )
+    
+    glm(
+      interaction_formula,
+      data = mortality_ccc_analysis_data,
+      family = binomial,
+      na.action = na.fail
+    )
+  }
+)
+names(mortality_asthma_models) <- asthma_interaction_exposures
+
+mortality_asthma_fit_qc <- purrr::imap_dfr(
+  mortality_asthma_models,
+  function(model, exposure) {
+    reference_model <- mortality_ccc_models[[exposure]]$ccc_adjusted
+    matrix <- model.matrix(model)
+    coefficient_table <- summary(model)$coefficients
+    
+    tibble(
+      exposure = exposure,
+      formula = paste(deparse(formula(model)), collapse = " "),
+      n_obs = nobs(model),
+      n_events = sum(model.response(model.frame(model)) == 1L),
+      n_parameters_excluding_intercept = model$rank - 1L,
+      same_reference_rows = identical(
+        rownames(model.frame(model)),
+        rownames(model.frame(reference_model))
+      ),
+      converged = isTRUE(model$converged),
+      boundary = isTRUE(model$boundary),
+      full_rank = qr(matrix)$rank == ncol(matrix),
+      coefficients_finite = all(is.finite(coef(model))),
+      standard_errors_finite = all(is.finite(coefficient_table[, "Std. Error"]))
+    )
+  }
+)
+
+mortality_asthma_checks <- list(
+  expected_four_models = length(mortality_asthma_models) == 4L,
+  same_reference_rows = all(mortality_asthma_fit_qc$same_reference_rows),
+  expected_sample_size = all(
+    mortality_asthma_fit_qc$n_obs == nrow(mortality_ccc_analysis_data)
+  ),
+  converged = all(mortality_asthma_fit_qc$converged),
+  no_boundary_fits = !any(mortality_asthma_fit_qc$boundary),
+  full_rank = all(mortality_asthma_fit_qc$full_rank),
+  coefficients_finite = all(mortality_asthma_fit_qc$coefficients_finite),
+  standard_errors_finite = all(mortality_asthma_fit_qc$standard_errors_finite)
+)
+
+model_qc$ccc_sensitivity$asthma_interaction <- list(
+  specification = list(
+    modifier = "ccc_asthma",
+    exposures = asthma_interaction_exposures,
+    scope = "Exploratory effect modification; no prespecified direction",
+    phenotype_limitation = "POA J45 diagnosis does not establish active status asthmaticus",
+    mortality_adjustment = mortality_ccc_included
+  ),
+  mortality = list(
+    model_diagnostics = mortality_asthma_fit_qc,
+    checks = mortality_asthma_checks
+  )
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+if (!all(vapply(mortality_asthma_checks, isTRUE, logical(1)))) {
+  print(mortality_asthma_fit_qc, n = Inf, width = Inf)
+  stop("Asthma mortality interaction fit checks failed; diagnostics retained. No automatic model changes.")
+}
+
+# Wald contrasts use the fitted covariance matrix, including covariance between
+# the exposure main effect and its interaction. No subgroup refitting is performed.
+
+mortality_asthma_results <- purrr::imap_dfr(
+  mortality_asthma_models,
+  function(model, exposure) {
+    beta <- coef(model)
+    covariance <- vcov(model)
+    interaction_candidates <- c(
+      paste0(exposure, ":ccc_asthma"),
+      paste0("ccc_asthma:", exposure)
+    )
+    interaction_term <- intersect(interaction_candidates, names(beta))
+    
+    if (length(interaction_term) != 1L) {
+      stop("Expected one asthma interaction coefficient for ", exposure)
+    }
+    
+    interaction_term <- interaction_term[[1L]]
+    
+    contrasts <- list(
+      interaction = setNames(1, interaction_term),
+      asthma_absent = setNames(1, exposure),
+      asthma_present = setNames(c(1, 1), c(exposure, interaction_term))
+    )
+    
+    purrr::imap_dfr(contrasts, function(weights, contrast_name) {
+      terms <- names(weights)
+      log_estimate <- sum(weights * beta[terms])
+      variance <- as.numeric(
+        t(weights) %*% covariance[terms, terms, drop = FALSE] %*% weights
+      )
+      
+      if (!is.finite(variance) || variance <= 0) {
+        stop("Invalid asthma mortality contrast variance for ", exposure, " / ", contrast_name)
+      }
+      
+      standard_error <- sqrt(variance)
+      statistic <- log_estimate / standard_error
+      
+      tibble(
+        exposure = exposure,
+        contrast = contrast_name,
+        estimate_type = if (contrast_name == "interaction") "Ratio of ORs" else "OR",
+        log_estimate = log_estimate,
+        standard_error = standard_error,
+        statistic = statistic,
+        p_value = 2 * pnorm(abs(statistic), lower.tail = FALSE),
+        estimate = exp(log_estimate),
+        conf_low = exp(log_estimate - qnorm(0.975) * standard_error),
+        conf_high = exp(log_estimate + qnorm(0.975) * standard_error),
+        n_obs = nobs(model)
+      )
+    })
+  }
+)
+
+mortality_asthma_results_valid <- all(is.finite(as.matrix(
+  mortality_asthma_results[c(
+    "log_estimate", "standard_error", "statistic", "p_value",
+    "estimate", "conf_low", "conf_high", "n_obs"
+  )]
+))) && all(
+  mortality_asthma_results$p_value >= 0 &
+    mortality_asthma_results$p_value <= 1
+)
+
+model_qc$ccc_sensitivity$asthma_interaction$mortality$contrast_results <- mortality_asthma_results
+model_qc$ccc_sensitivity$asthma_interaction$mortality$checks$contrast_results_valid <-
+  mortality_asthma_results_valid
+model_qc$ccc_sensitivity$asthma_interaction$mortality$interpretation <- paste0(
+  "Asthma-specific ORs are conditional exposure slopes from one interaction model, ",
+  "not separately fitted subgroup models. The interaction is the ratio of these ORs ",
+  "for the same one-unit exposure increase. Four related exposure specifications ",
+  "are exploratory; no multiplicity adjustment is applied."
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+if (!isTRUE(mortality_asthma_results_valid)) {
+  stop("Asthma mortality contrast results contain invalid values; available results retained.")
+}
+
+message("Asthma mortality interaction estimates and conditional slopes retained.")
+
+# =============================================================================
+# Chronic respiratory interaction sensitivity: 60-day mortality
+# =============================================================================
+# Preserve the existing mortality sample and adjustment. Add one interaction only.
+
+chronic_resp_modifier <- "ccc_resp_chronic_malformation"
+
+mortality_chronic_resp_models <- purrr::map(
+  asthma_interaction_exposures,
+  function(exposure) {
+    reference_model <- mortality_ccc_models[[exposure]]$ccc_adjusted
+    interaction_formula <- update.formula(
+      formula(reference_model),
+      paste(". ~ . +", paste0(exposure, ":", chronic_resp_modifier))
+    )
+    
+    glm(
+      interaction_formula,
+      data = mortality_ccc_analysis_data,
+      family = binomial,
+      na.action = na.fail
+    )
+  }
+)
+names(mortality_chronic_resp_models) <- asthma_interaction_exposures
+
+mortality_chronic_resp_fit_qc <- purrr::imap_dfr(
+  mortality_chronic_resp_models,
+  function(model, exposure) {
+    reference_model <- mortality_ccc_models[[exposure]]$ccc_adjusted
+    matrix <- model.matrix(model)
+    coefficient_table <- summary(model)$coefficients
+    
+    tibble(
+      exposure = exposure,
+      formula = paste(deparse(formula(model)), collapse = " "),
+      n_obs = nobs(model),
+      n_events = sum(model.response(model.frame(model)) == 1L),
+      n_parameters_excluding_intercept = model$rank - 1L,
+      same_reference_rows = identical(
+        rownames(model.frame(model)),
+        rownames(model.frame(reference_model))
+      ),
+      converged = isTRUE(model$converged),
+      boundary = isTRUE(model$boundary),
+      full_rank = qr(matrix)$rank == ncol(matrix),
+      coefficients_finite = all(is.finite(coef(model))),
+      standard_errors_finite = all(is.finite(coefficient_table[, "Std. Error"]))
+    )
+  }
+)
+
+mortality_chronic_resp_checks <- list(
+  expected_four_models = length(mortality_chronic_resp_models) == 4L,
+  same_reference_rows = all(mortality_chronic_resp_fit_qc$same_reference_rows),
+  expected_sample_size = all(
+    mortality_chronic_resp_fit_qc$n_obs == nrow(mortality_ccc_analysis_data)
+  ),
+  converged = all(mortality_chronic_resp_fit_qc$converged),
+  no_boundary_fits = !any(mortality_chronic_resp_fit_qc$boundary),
+  full_rank = all(mortality_chronic_resp_fit_qc$full_rank),
+  coefficients_finite = all(mortality_chronic_resp_fit_qc$coefficients_finite),
+  standard_errors_finite = all(mortality_chronic_resp_fit_qc$standard_errors_finite)
+)
+
+model_qc$ccc_sensitivity$chronic_resp_interaction <- list(
+  specification = list(
+    modifier = chronic_resp_modifier,
+    exposures = asthma_interaction_exposures,
+    scope = "Exploratory effect modification; no prespecified direction",
+    phenotype_limitation = "Combined chronic respiratory diagnoses and malformations are heterogeneous",
+    mortality_adjustment = mortality_ccc_included
+  ),
+  mortality = list(
+    model_diagnostics = mortality_chronic_resp_fit_qc,
+    checks = mortality_chronic_resp_checks
+  )
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+if (!all(vapply(mortality_chronic_resp_checks, isTRUE, logical(1)))) {
+  print(mortality_chronic_resp_fit_qc, n = Inf, width = Inf)
+  stop("Chronic respiratory mortality interaction fit checks failed; diagnostics retained.")
+}
+
+mortality_chronic_resp_results <- purrr::imap_dfr(
+  mortality_chronic_resp_models,
+  function(model, exposure) {
+    beta <- coef(model)
+    covariance <- vcov(model)
+    interaction_candidates <- c(
+      paste0(exposure, ":", chronic_resp_modifier),
+      paste0(chronic_resp_modifier, ":", exposure)
+    )
+    interaction_term <- intersect(interaction_candidates, names(beta))
+    
+    if (length(interaction_term) != 1L) {
+      stop("Expected one chronic respiratory mortality interaction coefficient for ", exposure)
+    }
+    
+    interaction_term <- interaction_term[[1L]]
+    
+    contrasts <- list(
+      interaction = setNames(1, interaction_term),
+      chronic_resp_absent = setNames(1, exposure),
+      chronic_resp_present = setNames(c(1, 1), c(exposure, interaction_term))
+    )
+    
+    purrr::imap_dfr(contrasts, function(weights, contrast_name) {
+      terms <- names(weights)
+      log_estimate <- sum(weights * beta[terms])
+      variance <- as.numeric(
+        t(weights) %*% covariance[terms, terms, drop = FALSE] %*% weights
+      )
+      
+      if (!is.finite(variance) || variance <= 0) {
+        stop("Invalid chronic respiratory mortality contrast variance for ", exposure, " / ", contrast_name)
+      }
+      
+      standard_error <- sqrt(variance)
+      statistic <- log_estimate / standard_error
+      
+      tibble(
+        exposure = exposure,
+        contrast = contrast_name,
+        estimate_type = if (contrast_name == "interaction") "Ratio of ORs" else "OR",
+        log_estimate = log_estimate,
+        standard_error = standard_error,
+        statistic = statistic,
+        p_value = 2 * pnorm(abs(statistic), lower.tail = FALSE),
+        estimate = exp(log_estimate),
+        conf_low = exp(log_estimate - qnorm(0.975) * standard_error),
+        conf_high = exp(log_estimate + qnorm(0.975) * standard_error),
+        n_obs = nobs(model)
+      )
+    })
+  }
+)
+
+mortality_chronic_resp_results_valid <- all(is.finite(as.matrix(
+  mortality_chronic_resp_results[c(
+    "log_estimate", "standard_error", "statistic", "p_value",
+    "estimate", "conf_low", "conf_high", "n_obs"
+  )]
+))) && all(
+  mortality_chronic_resp_results$p_value >= 0 &
+    mortality_chronic_resp_results$p_value <= 1
+)
+
+model_qc$ccc_sensitivity$chronic_resp_interaction$mortality$contrast_results <-
+  mortality_chronic_resp_results
+model_qc$ccc_sensitivity$chronic_resp_interaction$mortality$checks$contrast_results_valid <-
+  mortality_chronic_resp_results_valid
+model_qc$ccc_sensitivity$chronic_resp_interaction$mortality$interpretation <- paste0(
+  "Modifier-specific ORs are conditional exposure slopes from one interaction model, ",
+  "not separately fitted subgroup models. The interaction is their ratio for the same ",
+  "one-unit exposure increase. Four related specifications are exploratory; ",
+  "no multiplicity adjustment is applied."
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+if (!isTRUE(mortality_chronic_resp_results_valid)) {
+  stop("Chronic respiratory mortality contrasts contain invalid values; available results retained.")
+}
+
+message("Chronic respiratory mortality interaction estimates and conditional slopes retained.")
+
+# =============================================================================
+# Neurologic-mechanics interaction sensitivity: 60-day mortality
+# =============================================================================
+# Diagnosis-based exploratory modifier, not a measurement of restrictive physiology.
+# Preserve the existing sample and adjustment; add one interaction at a time.
+
+neuro_mechanics_modifier <- "ccc_neuro_mechanics"
+
+mortality_neuro_models <- purrr::map(asthma_interaction_exposures, function(exposure) {
+  reference_model <- mortality_ccc_models[[exposure]]$ccc_adjusted
+  interaction_formula <- update.formula(
+    formula(reference_model),
+    paste(". ~ . +", paste0(exposure, ":", neuro_mechanics_modifier))
+  )
+  
+  glm(
+    interaction_formula,
+    data = mortality_ccc_analysis_data,
+    family = binomial,
+    na.action = na.fail
+  )
+})
+names(mortality_neuro_models) <- asthma_interaction_exposures
+
+mortality_neuro_fit_qc <- purrr::imap_dfr(mortality_neuro_models, function(model, exposure) {
+  reference_model <- mortality_ccc_models[[exposure]]$ccc_adjusted
+  matrix <- model.matrix(model)
+  coefficient_table <- summary(model)$coefficients
+  
+  tibble(
+    exposure = exposure,
+    formula = paste(deparse(formula(model)), collapse = " "),
+    n_obs = nobs(model),
+    n_events = sum(model.response(model.frame(model)) == 1L),
+    n_parameters_excluding_intercept = model$rank - 1L,
+    same_reference_rows = identical(
+      rownames(model.frame(model)),
+      rownames(model.frame(reference_model))
+    ),
+    converged = isTRUE(model$converged),
+    boundary = isTRUE(model$boundary),
+    full_rank = qr(matrix)$rank == ncol(matrix),
+    coefficients_finite = all(is.finite(coef(model))),
+    standard_errors_finite = all(is.finite(coefficient_table[, "Std. Error"]))
+  )
+})
+
+mortality_neuro_checks <- list(
+  expected_four_models = length(mortality_neuro_models) == 4L,
+  same_reference_rows = all(mortality_neuro_fit_qc$same_reference_rows),
+  expected_sample_size = all(
+    mortality_neuro_fit_qc$n_obs == nrow(mortality_ccc_analysis_data)
+  ),
+  converged = all(mortality_neuro_fit_qc$converged),
+  no_boundary_fits = !any(mortality_neuro_fit_qc$boundary),
+  full_rank = all(mortality_neuro_fit_qc$full_rank),
+  coefficients_finite = all(mortality_neuro_fit_qc$coefficients_finite),
+  standard_errors_finite = all(mortality_neuro_fit_qc$standard_errors_finite)
+)
+
+model_qc$ccc_sensitivity$neuro_mechanics_interaction <- list(
+  specification = list(
+    modifier = neuro_mechanics_modifier,
+    exposures = asthma_interaction_exposures,
+    scope = "Exploratory effect modification; no prespecified direction",
+    phenotype_limitation = "Diagnosis group does not establish measured restrictive physiology",
+    mortality_adjustment = mortality_ccc_included
+  ),
+  mortality = list(
+    model_diagnostics = mortality_neuro_fit_qc,
+    checks = mortality_neuro_checks
+  )
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+if (!all(vapply(mortality_neuro_checks, isTRUE, logical(1)))) {
+  print(mortality_neuro_fit_qc, n = Inf, width = Inf)
+  stop("Neurologic mortality interaction fit checks failed; diagnostics retained.")
+}
+
+mortality_neuro_results <- purrr::imap_dfr(
+  mortality_neuro_models,
+  function(model, exposure) {
+    beta <- coef(model)
+    covariance <- vcov(model)
+    interaction_candidates <- c(
+      paste0(exposure, ":", neuro_mechanics_modifier),
+      paste0(neuro_mechanics_modifier, ":", exposure)
+    )
+    interaction_term <- intersect(interaction_candidates, names(beta))
+    
+    if (length(interaction_term) != 1L) {
+      stop("Expected one neurologic mortality interaction coefficient for ", exposure)
+    }
+    
+    interaction_term <- interaction_term[[1L]]
+    
+    contrasts <- list(
+      interaction = setNames(1, interaction_term),
+      neuro_mechanics_absent = setNames(1, exposure),
+      neuro_mechanics_present = setNames(c(1, 1), c(exposure, interaction_term))
+    )
+    
+    purrr::imap_dfr(contrasts, function(weights, contrast_name) {
+      terms <- names(weights)
+      log_estimate <- sum(weights * beta[terms])
+      variance <- as.numeric(
+        t(weights) %*% covariance[terms, terms, drop = FALSE] %*% weights
+      )
+      
+      if (!is.finite(variance) || variance <= 0) {
+        stop("Invalid neurologic mortality contrast variance for ", exposure, " / ", contrast_name)
+      }
+      
+      standard_error <- sqrt(variance)
+      statistic <- log_estimate / standard_error
+      
+      tibble(
+        exposure = exposure,
+        contrast = contrast_name,
+        estimate_type = if (contrast_name == "interaction") "Ratio of ORs" else "OR",
+        log_estimate = log_estimate,
+        standard_error = standard_error,
+        statistic = statistic,
+        p_value = 2 * pnorm(abs(statistic), lower.tail = FALSE),
+        estimate = exp(log_estimate),
+        conf_low = exp(log_estimate - qnorm(0.975) * standard_error),
+        conf_high = exp(log_estimate + qnorm(0.975) * standard_error),
+        n_obs = nobs(model)
+      )
+    })
+  }
+)
+
+mortality_neuro_results_valid <- all(is.finite(as.matrix(
+  mortality_neuro_results[c(
+    "log_estimate", "standard_error", "statistic", "p_value",
+    "estimate", "conf_low", "conf_high", "n_obs"
+  )]
+))) && all(
+  mortality_neuro_results$p_value >= 0 &
+    mortality_neuro_results$p_value <= 1
+)
+
+model_qc$ccc_sensitivity$neuro_mechanics_interaction$mortality$contrast_results <-
+  mortality_neuro_results
+model_qc$ccc_sensitivity$neuro_mechanics_interaction$mortality$checks$contrast_results_valid <-
+  mortality_neuro_results_valid
+model_qc$ccc_sensitivity$neuro_mechanics_interaction$mortality$interpretation <- paste0(
+  "Modifier-specific ORs are conditional exposure slopes from one interaction model, ",
+  "not subgroup refits. The interaction is their ratio for the same one-unit exposure ",
+  "increase. Four related specifications are exploratory; no multiplicity adjustment is applied."
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+if (!isTRUE(mortality_neuro_results_valid)) {
+  stop("Neurologic mortality contrasts contain invalid values; available results retained.")
+}
+
+message("Neurologic mortality interaction estimates and conditional slopes retained.")
+
+# =============================================================================
 # 4d. Linear regression — continuous outcomes
 # =============================================================================
 
@@ -1848,9 +2525,9 @@ continuous_outcome_qc <- purrr::imap_dfr(continuous_outcomes, function(outcome, 
 })
 
 continuous_sample_qc <- purrr::imap_dfr(continuous_outcomes, function(outcome, outcome_name) {
-  covariate_formula <- model_covariates(outcome$var)
+  covariate_formula <- continuous_model_covariates(outcome$var)
   covariate_vars <- all.vars(as.formula(paste("~", covariate_formula)))
-  required_vars <- unique(c(outcome$var, exposure_vars, covariate_vars))
+  required_vars <- unique(c(outcome$var, exposure_vars, covariate_vars, ccc_vars))
   
   analysis_data <- cross_sectional %>%
     select(all_of(required_vars)) %>%
@@ -1992,6 +2669,8 @@ continuous_regression_labels <- c(
   bmi = "BMI (kg/m²)"
 )
 
+continuous_regression_labels <- c(continuous_regression_labels, ccc_regression_labels)
+
 continuous_models <- list()
 continuous_tables <- list()
 continuous_analysis_data <- list()
@@ -1999,12 +2678,14 @@ continuous_model_qc <- list()
 continuous_aic_qc <- list()
 continuous_hc3_qc <- list()
 
+# The primary loop below constructs the final CCC-complete sample for each outcome.
+
 for (outcome_name in names(continuous_outcomes)) {
   outcome_var <- continuous_outcomes[[outcome_name]]$var
   outcome_label <- continuous_outcomes[[outcome_name]]$label
-  covars_used <- model_covariates(outcome_var)
+  covars_used <- continuous_model_covariates(outcome_var)
   covariate_vars <- all.vars(as.formula(paste("~", covars_used)))
-  required_vars <- unique(c(outcome_var, exposure_vars, covariate_vars))
+  required_vars <- unique(c(outcome_var, exposure_vars, covariate_vars, ccc_vars))
   
   # Use one complete-case sample for all exposure specifications within this outcome.
   analysis_data_outcome <- cross_sectional %>%
@@ -2207,6 +2888,45 @@ stopifnot(file.exists(model_qc_path), isTRUE(all(unlist(model_qc$checks))))
 message("Basic continuous-model diagnostics added to: ", model_qc_path)
 
 # =============================================================================
+# Final continuous CCC adjustment policy
+# =============================================================================
+# Primary models already contain the accepted CCC adjustment.
+# No paired reference or additional CCC-adjusted models are fitted here.
+
+model_qc$ccc_sensitivity$continuous_outcomes <- list(
+  formula_policy = purrr::imap_dfr(
+    continuous_outcomes,
+    function(outcome, outcome_name) {
+      omitted <- if (outcome$var %in% c("mechanical_power", "mp_pbw", "mp_pfvc")) {
+        c("ccc_resp_other", "ccc_resp_technology")
+      } else {
+        "ccc_resp_other"
+      }
+      
+      tibble(
+        outcome_name = outcome_name,
+        outcome_variable = outcome$var,
+        included_ccc_terms = paste(setdiff(ccc_vars, omitted), collapse = " + "),
+        omitted_ccc_terms = paste(omitted, collapse = " + "),
+        adjustment_formula = continuous_model_covariates(outcome$var),
+        omission_reason = paste0(
+          "Accepted outcome-specific omissions following zero-prevalence or ",
+          "singleton-leverage problems in the development-site analysis"
+        )
+      )
+    }
+  ),
+  sample_summary = continuous_sample_qc,
+  sample_source_rows = purrr::map(continuous_analysis_data, ~ .x$.source_row)
+)
+
+# Primary continuous coefficients use the existing HC3 diagnostics and unified outputs.
+
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+# =============================================================================
 # Model QC: continuous-model residuals, specification, and influence
 # =============================================================================
 
@@ -2396,7 +3116,7 @@ for (outcome_name in names(log_sensitivity_outcomes)) {
   outcome_var <- log_sensitivity_outcomes[[outcome_name]]$variable
   outcome_label <- log_sensitivity_outcomes[[outcome_name]]$label
   analysis_data_outcome <- continuous_analysis_data[[outcome_name]]
-  covars_used <- model_covariates(outcome_var)
+  covars_used <- continuous_model_covariates(outcome_var)
   
   expected_sample_n <- continuous_sample_qc$n_analyzed[
     continuous_sample_qc$outcome_name == outcome_name
@@ -2584,15 +3304,26 @@ vfd_outcome_checks <- list(
 
 stopifnot(isTRUE(all(unlist(vfd_outcome_checks))))
 
-vfd_cr_covariates <- covariates # VFD exposures are not DP-derived, so BMI is not added.
+# Final liberation adjustment omits other respiratory disease after the
+# development-site infinite-coefficient warnings. BMI is not added.
+vfd_ccc_included <- setdiff(ccc_vars, "ccc_resp_other")
+
+vfd_cr_covariates <- paste(
+  covariates, "+", paste(vfd_ccc_included, collapse = " + ")
+)
 
 vfd_covariate_vars <- all.vars(as.formula(paste("~", vfd_cr_covariates)))
-vfd_analysis_vars <- unique(c(vfd_required_outcome_vars, exposure_vars, vfd_covariate_vars))
+vfd_analysis_vars <- unique(c(
+  vfd_required_outcome_vars, exposure_vars, vfd_covariate_vars, ccc_vars
+))
 
 vfd_analysis_data <- cross_sectional %>%
   mutate(.source_row = row_number(), .patient_id = row_number()) %>%
   select(.source_row, .patient_id, all_of(vfd_analysis_vars)) %>%
   drop_na(all_of(vfd_analysis_vars))
+
+# The primary Fine-Gray sample already includes the six-indicator completeness requirement.
+# Retained interaction models reuse this sample without a second preparation pass.
 
 vfd_sample_qc <- vfd_analysis_data %>%
   summarise(
@@ -2795,6 +3526,8 @@ vfd_regression_labels <- c(
   sf10 = "SF ratio (per 10)"
 )
 
+vfd_regression_labels <- c(vfd_regression_labels, ccc_regression_labels)
+
 vfd_cr_tables <- purrr::map(vfd_cr_models, function(model) {
   tbl_regression(model, exponentiate = TRUE) %>%
     modify_table_body(function(table_body) {
@@ -2865,6 +3598,585 @@ save_model_qc(model_qc, model_qc_path)
 stopifnot(file.exists(model_qc_path), isTRUE(all(unlist(model_qc$checks))))
 
 message("Fine-Gray regression table saved to: ", vfd_output_path)
+
+# =============================================================================
+# Final liberation CCC policy and interaction-reference compatibility
+# =============================================================================
+# Reuse primary Fine-Gray fits; no additional reference or adjustment fits.
+
+vfd_ccc_analysis_data <- vfd_analysis_data
+
+vfd_ccc_models <- purrr::map(vfd_cr_models, function(model) {
+  attr(model, "patient_ids") <- vfd_analysis_data$.patient_id
+  list(ccc_adjusted = model)
+})
+
+model_qc$ccc_sensitivity$vfd_competing_risks <- list(
+  formula_policy = list(
+    included_ccc_terms = vfd_ccc_included,
+    omitted_ccc_terms = setdiff(ccc_vars, vfd_ccc_included),
+    omission_reason = paste0(
+      "Other respiratory disease omitted after infinite-coefficient warnings ",
+      "in the development-site Fine-Gray analysis"
+    )
+  ),
+  sample_source_rows = vfd_analysis_data$.source_row,
+  primary_adjustment_formula = vfd_cr_covariates
+)
+
+# Primary Fine-Gray coefficients use the existing unified outputs.
+
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+# =============================================================================
+# Asthma interaction sensitivity: successful liberation by day 28
+# =============================================================================
+# Preserve the existing Fine-Gray endpoint, sample, expansion, and robust inference.
+
+vfd_asthma_models <- purrr::map(asthma_interaction_exposures, function(exposure) {
+  model_rhs <- paste(
+    exposure, "+", vfd_cr_covariates,
+    "+", paste0(exposure, ":ccc_asthma")
+  )
+  
+  finegray_data <- vfd_ccc_analysis_data %>%
+    mutate(
+      vfd_status_f = factor(
+        vfd_status,
+        levels = c(0L, 1L, 2L),
+        labels = c("censored", "extubation", "death")
+      )
+    )
+  
+  expansion_formula <- as.formula(
+    paste("survival::Surv(vfd_time, vfd_status_f) ~ .patient_id +", model_rhs)
+  )
+  
+  expanded <- survival::finegray(
+    expansion_formula, data = finegray_data,
+    etype = "extubation", id = .patient_id
+  )
+  
+  fit_formula <- as.formula(
+    paste0(
+      "survival::Surv(fgstart, fgstop, fgstatus) ~ ",
+      model_rhs, " + cluster(.patient_id)"
+    )
+  )
+  
+  model <- survival::coxph(
+    fit_formula, data = expanded, weights = fgwt,
+    robust = TRUE, x = TRUE, model = TRUE, na.action = na.fail
+  )
+  
+  attr(model, "n_patients") <- nrow(finegray_data)
+  attr(model, "patient_ids") <- finegray_data$.patient_id
+  
+  model
+})
+names(vfd_asthma_models) <- asthma_interaction_exposures
+
+vfd_asthma_fit_qc <- purrr::imap_dfr(vfd_asthma_models, function(model, exposure) {
+  reference_model <- vfd_ccc_models[[exposure]]$ccc_adjusted
+  coefficient_table <- summary(model)$coefficients
+  
+  tibble(
+    exposure = exposure,
+    formula = paste(deparse(formula(model)), collapse = " "),
+    n_patients = attr(model, "n_patients"),
+    n_expanded_rows = nrow(model$x),
+    same_reference_patients = identical(
+      attr(model, "patient_ids"),
+      attr(reference_model, "patient_ids")
+    ),
+    same_reference_response_and_weights = identical(
+      model.frame(model)[[1L]],
+      model.frame(reference_model)[[1L]]
+    ) && identical(model$weights, reference_model$weights),
+    full_rank = qr(model$x)$rank == ncol(model$x),
+    coefficients_finite = all(is.finite(coef(model))),
+    robust_standard_errors_finite = all(is.finite(coefficient_table[, "robust se"]))
+  )
+})
+
+vfd_asthma_checks <- list(
+  expected_four_models = length(vfd_asthma_models) == 4L,
+  expected_patient_counts = all(
+    vfd_asthma_fit_qc$n_patients == nrow(vfd_ccc_analysis_data)
+  ),
+  same_reference_patients = all(vfd_asthma_fit_qc$same_reference_patients),
+  same_reference_expansion = all(vfd_asthma_fit_qc$same_reference_response_and_weights),
+  full_rank = all(vfd_asthma_fit_qc$full_rank),
+  coefficients_finite = all(vfd_asthma_fit_qc$coefficients_finite),
+  robust_standard_errors_finite = all(vfd_asthma_fit_qc$robust_standard_errors_finite)
+)
+
+model_qc$ccc_sensitivity$asthma_interaction$specification$liberation_adjustment <- vfd_ccc_included
+model_qc$ccc_sensitivity$asthma_interaction$liberation <- list(
+  model_diagnostics = vfd_asthma_fit_qc,
+  checks = vfd_asthma_checks
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+if (!all(vapply(vfd_asthma_checks, isTRUE, logical(1)))) {
+  print(vfd_asthma_fit_qc, n = Inf, width = Inf)
+  stop("Asthma liberation interaction fit checks failed; diagnostics retained. No automatic model changes.")
+}
+
+# Use the robust fitted covariance matrix for interaction and conditional slopes.
+# Asthma-present variance includes covariance between main and interaction effects.
+
+vfd_asthma_results <- purrr::imap_dfr(
+  vfd_asthma_models,
+  function(model, exposure) {
+    beta <- coef(model)
+    covariance <- vcov(model)
+    interaction_candidates <- c(
+      paste0(exposure, ":ccc_asthma"),
+      paste0("ccc_asthma:", exposure)
+    )
+    interaction_term <- intersect(interaction_candidates, names(beta))
+    
+    if (length(interaction_term) != 1L) {
+      stop("Expected one asthma liberation interaction coefficient for ", exposure)
+    }
+    
+    interaction_term <- interaction_term[[1L]]
+    
+    contrasts <- list(
+      interaction = setNames(1, interaction_term),
+      asthma_absent = setNames(1, exposure),
+      asthma_present = setNames(c(1, 1), c(exposure, interaction_term))
+    )
+    
+    purrr::imap_dfr(contrasts, function(weights, contrast_name) {
+      terms <- names(weights)
+      log_estimate <- sum(weights * beta[terms])
+      variance <- as.numeric(
+        t(weights) %*% covariance[terms, terms, drop = FALSE] %*% weights
+      )
+      
+      if (!is.finite(variance) || variance <= 0) {
+        stop("Invalid asthma liberation contrast variance for ", exposure, " / ", contrast_name)
+      }
+      
+      standard_error <- sqrt(variance)
+      statistic <- log_estimate / standard_error
+      
+      tibble(
+        exposure = exposure,
+        contrast = contrast_name,
+        estimate_type = if (contrast_name == "interaction") "Ratio of SHRs" else "SHR",
+        log_estimate = log_estimate,
+        standard_error = standard_error,
+        statistic = statistic,
+        p_value = 2 * pnorm(abs(statistic), lower.tail = FALSE),
+        estimate = exp(log_estimate),
+        conf_low = exp(log_estimate - qnorm(0.975) * standard_error),
+        conf_high = exp(log_estimate + qnorm(0.975) * standard_error),
+        n_obs = attr(model, "n_patients")
+      )
+    })
+  }
+)
+
+vfd_asthma_results_valid <- all(is.finite(as.matrix(
+  vfd_asthma_results[c(
+    "log_estimate", "standard_error", "statistic", "p_value",
+    "estimate", "conf_low", "conf_high", "n_obs"
+  )]
+))) && all(
+  vfd_asthma_results$p_value >= 0 &
+    vfd_asthma_results$p_value <= 1
+)
+
+model_qc$ccc_sensitivity$asthma_interaction$liberation$contrast_results <- vfd_asthma_results
+model_qc$ccc_sensitivity$asthma_interaction$liberation$checks$contrast_results_valid <-
+  vfd_asthma_results_valid
+model_qc$ccc_sensitivity$asthma_interaction$liberation$interpretation <- paste0(
+  "Asthma-specific SHRs are conditional exposure slopes from one interaction model. ",
+  "The interaction is their ratio for the same one-unit exposure increase. ",
+  "Inference uses the patient-clustered robust covariance matrix. ",
+  "SHRs concern successful liberation with competing death; they are not days or risk ratios. ",
+  "Four related exposure specifications are exploratory; no multiplicity adjustment is applied."
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+if (!isTRUE(vfd_asthma_results_valid)) {
+  stop("Asthma liberation contrast results contain invalid values; available results retained.")
+}
+
+message("Asthma liberation interaction estimates and conditional slopes retained.")
+
+# =============================================================================
+# Chronic respiratory interaction sensitivity: liberation by day 28
+# =============================================================================
+# Preserve the existing Fine-Gray sample, endpoint, expansion, and robust inference.
+
+vfd_chronic_resp_models <- purrr::map(asthma_interaction_exposures, function(exposure) {
+  model_rhs <- paste(
+    exposure, "+", vfd_cr_covariates,
+    "+", paste0(exposure, ":", chronic_resp_modifier)
+  )
+  
+  finegray_data <- vfd_ccc_analysis_data %>%
+    mutate(
+      vfd_status_f = factor(
+        vfd_status,
+        levels = c(0L, 1L, 2L),
+        labels = c("censored", "extubation", "death")
+      )
+    )
+  
+  expansion_formula <- as.formula(
+    paste("survival::Surv(vfd_time, vfd_status_f) ~ .patient_id +", model_rhs)
+  )
+  
+  expanded <- survival::finegray(
+    expansion_formula, data = finegray_data,
+    etype = "extubation", id = .patient_id
+  )
+  
+  fit_formula <- as.formula(
+    paste0(
+      "survival::Surv(fgstart, fgstop, fgstatus) ~ ",
+      model_rhs, " + cluster(.patient_id)"
+    )
+  )
+  
+  model <- survival::coxph(
+    fit_formula, data = expanded, weights = fgwt,
+    robust = TRUE, x = TRUE, model = TRUE, na.action = na.fail
+  )
+  
+  attr(model, "n_patients") <- nrow(finegray_data)
+  attr(model, "patient_ids") <- finegray_data$.patient_id
+  
+  model
+})
+names(vfd_chronic_resp_models) <- asthma_interaction_exposures
+
+vfd_chronic_resp_fit_qc <- purrr::imap_dfr(
+  vfd_chronic_resp_models,
+  function(model, exposure) {
+    reference_model <- vfd_ccc_models[[exposure]]$ccc_adjusted
+    coefficient_table <- summary(model)$coefficients
+    
+    tibble(
+      exposure = exposure,
+      formula = paste(deparse(formula(model)), collapse = " "),
+      n_patients = attr(model, "n_patients"),
+      n_expanded_rows = nrow(model$x),
+      same_reference_patients = identical(
+        attr(model, "patient_ids"),
+        attr(reference_model, "patient_ids")
+      ),
+      same_reference_response_and_weights = identical(
+        model.frame(model)[[1L]],
+        model.frame(reference_model)[[1L]]
+      ) && identical(model$weights, reference_model$weights),
+      full_rank = qr(model$x)$rank == ncol(model$x),
+      coefficients_finite = all(is.finite(coef(model))),
+      robust_standard_errors_finite = all(is.finite(coefficient_table[, "robust se"]))
+    )
+  }
+)
+
+vfd_chronic_resp_checks <- list(
+  expected_four_models = length(vfd_chronic_resp_models) == 4L,
+  expected_patient_counts = all(
+    vfd_chronic_resp_fit_qc$n_patients == nrow(vfd_ccc_analysis_data)
+  ),
+  same_reference_patients = all(vfd_chronic_resp_fit_qc$same_reference_patients),
+  same_reference_expansion = all(vfd_chronic_resp_fit_qc$same_reference_response_and_weights),
+  full_rank = all(vfd_chronic_resp_fit_qc$full_rank),
+  coefficients_finite = all(vfd_chronic_resp_fit_qc$coefficients_finite),
+  robust_standard_errors_finite = all(vfd_chronic_resp_fit_qc$robust_standard_errors_finite)
+)
+
+model_qc$ccc_sensitivity$chronic_resp_interaction$specification$liberation_adjustment <-
+  vfd_ccc_included
+model_qc$ccc_sensitivity$chronic_resp_interaction$liberation <- list(
+  model_diagnostics = vfd_chronic_resp_fit_qc,
+  checks = vfd_chronic_resp_checks
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+if (!all(vapply(vfd_chronic_resp_checks, isTRUE, logical(1)))) {
+  print(vfd_chronic_resp_fit_qc, n = Inf, width = Inf)
+  stop("Chronic respiratory liberation interaction fit checks failed; diagnostics retained.")
+}
+
+vfd_chronic_resp_results <- purrr::imap_dfr(
+  vfd_chronic_resp_models,
+  function(model, exposure) {
+    beta <- coef(model)
+    covariance <- vcov(model)
+    interaction_candidates <- c(
+      paste0(exposure, ":", chronic_resp_modifier),
+      paste0(chronic_resp_modifier, ":", exposure)
+    )
+    interaction_term <- intersect(interaction_candidates, names(beta))
+    
+    if (length(interaction_term) != 1L) {
+      stop("Expected one chronic respiratory liberation interaction coefficient for ", exposure)
+    }
+    
+    interaction_term <- interaction_term[[1L]]
+    
+    contrasts <- list(
+      interaction = setNames(1, interaction_term),
+      chronic_resp_absent = setNames(1, exposure),
+      chronic_resp_present = setNames(c(1, 1), c(exposure, interaction_term))
+    )
+    
+    purrr::imap_dfr(contrasts, function(weights, contrast_name) {
+      terms <- names(weights)
+      log_estimate <- sum(weights * beta[terms])
+      variance <- as.numeric(
+        t(weights) %*% covariance[terms, terms, drop = FALSE] %*% weights
+      )
+      
+      if (!is.finite(variance) || variance <= 0) {
+        stop("Invalid chronic respiratory liberation contrast variance for ", exposure, " / ", contrast_name)
+      }
+      
+      standard_error <- sqrt(variance)
+      statistic <- log_estimate / standard_error
+      
+      tibble(
+        exposure = exposure,
+        contrast = contrast_name,
+        estimate_type = if (contrast_name == "interaction") "Ratio of SHRs" else "SHR",
+        log_estimate = log_estimate,
+        standard_error = standard_error,
+        statistic = statistic,
+        p_value = 2 * pnorm(abs(statistic), lower.tail = FALSE),
+        estimate = exp(log_estimate),
+        conf_low = exp(log_estimate - qnorm(0.975) * standard_error),
+        conf_high = exp(log_estimate + qnorm(0.975) * standard_error),
+        n_obs = attr(model, "n_patients")
+      )
+    })
+  }
+)
+
+vfd_chronic_resp_results_valid <- all(is.finite(as.matrix(
+  vfd_chronic_resp_results[c(
+    "log_estimate", "standard_error", "statistic", "p_value",
+    "estimate", "conf_low", "conf_high", "n_obs"
+  )]
+))) && all(
+  vfd_chronic_resp_results$p_value >= 0 &
+    vfd_chronic_resp_results$p_value <= 1
+)
+
+model_qc$ccc_sensitivity$chronic_resp_interaction$liberation$contrast_results <-
+  vfd_chronic_resp_results
+model_qc$ccc_sensitivity$chronic_resp_interaction$liberation$checks$contrast_results_valid <-
+  vfd_chronic_resp_results_valid
+model_qc$ccc_sensitivity$chronic_resp_interaction$liberation$interpretation <- paste0(
+  "Modifier-specific SHRs are conditional exposure slopes from one interaction model. ",
+  "The interaction is their ratio for the same one-unit exposure increase. ",
+  "Inference uses the patient-clustered robust covariance matrix. ",
+  "SHRs concern successful liberation with competing death, not days or risk ratios. ",
+  "Four related specifications are exploratory; no multiplicity adjustment is applied."
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+if (!isTRUE(vfd_chronic_resp_results_valid)) {
+  stop("Chronic respiratory liberation contrasts contain invalid values; available results retained.")
+}
+
+# =============================================================================
+# Neurologic-mechanics interaction sensitivity: liberation by day 28
+# =============================================================================
+
+vfd_neuro_models <- purrr::map(asthma_interaction_exposures, function(exposure) {
+  model_rhs <- paste(
+    exposure, "+", vfd_cr_covariates,
+    "+", paste0(exposure, ":", neuro_mechanics_modifier)
+  )
+  
+  finegray_data <- vfd_ccc_analysis_data %>%
+    mutate(
+      vfd_status_f = factor(
+        vfd_status,
+        levels = c(0L, 1L, 2L),
+        labels = c("censored", "extubation", "death")
+      )
+    )
+  
+  expansion_formula <- as.formula(
+    paste("survival::Surv(vfd_time, vfd_status_f) ~ .patient_id +", model_rhs)
+  )
+  
+  expanded <- survival::finegray(
+    expansion_formula, data = finegray_data,
+    etype = "extubation", id = .patient_id
+  )
+  
+  fit_formula <- as.formula(
+    paste0(
+      "survival::Surv(fgstart, fgstop, fgstatus) ~ ",
+      model_rhs, " + cluster(.patient_id)"
+    )
+  )
+  
+  model <- survival::coxph(
+    fit_formula, data = expanded, weights = fgwt,
+    robust = TRUE, x = TRUE, model = TRUE, na.action = na.fail
+  )
+  
+  attr(model, "n_patients") <- nrow(finegray_data)
+  attr(model, "patient_ids") <- finegray_data$.patient_id
+  
+  model
+})
+names(vfd_neuro_models) <- asthma_interaction_exposures
+
+vfd_neuro_fit_qc <- purrr::imap_dfr(vfd_neuro_models, function(model, exposure) {
+  reference_model <- vfd_ccc_models[[exposure]]$ccc_adjusted
+  coefficient_table <- summary(model)$coefficients
+  
+  tibble(
+    exposure = exposure,
+    formula = paste(deparse(formula(model)), collapse = " "),
+    n_patients = attr(model, "n_patients"),
+    n_expanded_rows = nrow(model$x),
+    same_reference_patients = identical(
+      attr(model, "patient_ids"),
+      attr(reference_model, "patient_ids")
+    ),
+    same_reference_response_and_weights = identical(
+      model.frame(model)[[1L]],
+      model.frame(reference_model)[[1L]]
+    ) && identical(model$weights, reference_model$weights),
+    full_rank = qr(model$x)$rank == ncol(model$x),
+    coefficients_finite = all(is.finite(coef(model))),
+    robust_standard_errors_finite = all(is.finite(coefficient_table[, "robust se"]))
+  )
+})
+
+vfd_neuro_checks <- list(
+  expected_four_models = length(vfd_neuro_models) == 4L,
+  expected_patient_counts = all(vfd_neuro_fit_qc$n_patients == nrow(vfd_ccc_analysis_data)),
+  same_reference_patients = all(vfd_neuro_fit_qc$same_reference_patients),
+  same_reference_expansion = all(vfd_neuro_fit_qc$same_reference_response_and_weights),
+  full_rank = all(vfd_neuro_fit_qc$full_rank),
+  coefficients_finite = all(vfd_neuro_fit_qc$coefficients_finite),
+  robust_standard_errors_finite = all(vfd_neuro_fit_qc$robust_standard_errors_finite)
+)
+
+model_qc$ccc_sensitivity$neuro_mechanics_interaction$specification$liberation_adjustment <-
+  vfd_ccc_included
+model_qc$ccc_sensitivity$neuro_mechanics_interaction$liberation <- list(
+  model_diagnostics = vfd_neuro_fit_qc,
+  checks = vfd_neuro_checks
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+if (!all(vapply(vfd_neuro_checks, isTRUE, logical(1)))) {
+  print(vfd_neuro_fit_qc, n = Inf, width = Inf)
+  stop("Neurologic liberation interaction fit checks failed; diagnostics retained.")
+}
+
+vfd_neuro_results <- purrr::imap_dfr(
+  vfd_neuro_models,
+  function(model, exposure) {
+    beta <- coef(model)
+    covariance <- vcov(model)
+    interaction_candidates <- c(
+      paste0(exposure, ":", neuro_mechanics_modifier),
+      paste0(neuro_mechanics_modifier, ":", exposure)
+    )
+    interaction_term <- intersect(interaction_candidates, names(beta))
+    
+    if (length(interaction_term) != 1L) {
+      stop("Expected one neurologic liberation interaction coefficient for ", exposure)
+    }
+    
+    interaction_term <- interaction_term[[1L]]
+    
+    contrasts <- list(
+      interaction = setNames(1, interaction_term),
+      neuro_mechanics_absent = setNames(1, exposure),
+      neuro_mechanics_present = setNames(c(1, 1), c(exposure, interaction_term))
+    )
+    
+    purrr::imap_dfr(contrasts, function(weights, contrast_name) {
+      terms <- names(weights)
+      log_estimate <- sum(weights * beta[terms])
+      variance <- as.numeric(
+        t(weights) %*% covariance[terms, terms, drop = FALSE] %*% weights
+      )
+      
+      if (!is.finite(variance) || variance <= 0) {
+        stop("Invalid neurologic liberation contrast variance for ", exposure, " / ", contrast_name)
+      }
+      
+      standard_error <- sqrt(variance)
+      statistic <- log_estimate / standard_error
+      
+      tibble(
+        exposure = exposure,
+        contrast = contrast_name,
+        estimate_type = if (contrast_name == "interaction") "Ratio of SHRs" else "SHR",
+        log_estimate = log_estimate,
+        standard_error = standard_error,
+        statistic = statistic,
+        p_value = 2 * pnorm(abs(statistic), lower.tail = FALSE),
+        estimate = exp(log_estimate),
+        conf_low = exp(log_estimate - qnorm(0.975) * standard_error),
+        conf_high = exp(log_estimate + qnorm(0.975) * standard_error),
+        n_obs = attr(model, "n_patients")
+      )
+    })
+  }
+)
+
+vfd_neuro_results_valid <- all(is.finite(as.matrix(
+  vfd_neuro_results[c(
+    "log_estimate", "standard_error", "statistic", "p_value",
+    "estimate", "conf_low", "conf_high", "n_obs"
+  )]
+))) && all(
+  vfd_neuro_results$p_value >= 0 &
+    vfd_neuro_results$p_value <= 1
+)
+
+model_qc$ccc_sensitivity$neuro_mechanics_interaction$liberation$contrast_results <-
+  vfd_neuro_results
+model_qc$ccc_sensitivity$neuro_mechanics_interaction$liberation$checks$contrast_results_valid <-
+  vfd_neuro_results_valid
+model_qc$ccc_sensitivity$neuro_mechanics_interaction$liberation$interpretation <- paste0(
+  "Modifier-specific SHRs are conditional exposure slopes from one interaction model. ",
+  "The interaction is their ratio for the same one-unit exposure increase. ",
+  "Inference uses the patient-clustered robust covariance matrix. ",
+  "SHRs concern successful liberation with competing death, not days or risk ratios. ",
+  "Four related specifications are exploratory; no multiplicity adjustment is applied."
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+if (!isTRUE(vfd_neuro_results_valid)) {
+  stop("Neurologic liberation contrasts contain invalid values; available results retained.")
+}
+
+message("Neurologic liberation interaction estimates and conditional slopes retained.")
 
 # =============================================================================
 # Model QC: proportional subdistribution-hazards diagnostics
@@ -3342,16 +4654,22 @@ message("Survival-endpoint QC added to: ", model_qc_path)
 
 # Use one common complete-case sample for both adjusted Cox models so coefficients, likelihoods, and AIC values are based
 # on the same patients.
+cox_ccc_included <- setdiff(ccc_vars, "ccc_resp_technology")
+
 cox_adjustment_vars <- c(
-  "age_at_admission", "sex_category", "race_category", "sf10", "sofa_total"
+  "age_at_admission", "sex_category", "race_category", "sf10", "sofa_total",
+  cox_ccc_included
 )
+
+cox_primary_covariates <- paste(cox_adjustment_vars, collapse = " + ")
 
 cox_exposure_vars <- c(
   "vtpbw", "vtabw", "vtnchs", "pfvc", "pbwpfvc", "nchspfvc", "abwpfvc"
 )
 
 cox_required_vars <- unique(c(
-  "surv_time", "mortality_event_60", cox_exposure_vars, cox_adjustment_vars
+  "surv_time", "mortality_event_60", cox_exposure_vars, cox_adjustment_vars,
+  ccc_vars
 ))
 
 missing_cox_vars <- setdiff(cox_required_vars, names(cross_sectional))
@@ -3362,6 +4680,9 @@ cox_analysis_data <- cross_sectional %>%
   mutate(.source_row = row_number(), event = as.integer(mortality_event_60)) %>%
   select(.source_row, event, all_of(cox_required_vars)) %>%
   drop_na(all_of(cox_required_vars))
+
+# Primary Cox models use the final CCC-complete sample directly.
+# No separate paired-sensitivity sample is constructed.
 
 cox_sample_qc <- cox_analysis_data %>%
   summarise(
@@ -3419,31 +4740,25 @@ stopifnot(file.exists(model_qc_path), isTRUE(all(unlist(model_qc$checks))))
 
 message("Common Cox-model sample QC added to: ", model_qc_path)
 
-# The preceding checks require both deaths and censored observations, so the adjusted Cox models are fit directly.
-cox_model <- coxph(
-  Surv(surv_time, event) ~ pbwpfvc + vtpbw + age_at_admission +
-    sex_category + race_category + sf10 + sofa_total,
-  data = cox_analysis_data, ties = "efron", x = TRUE, model = TRUE, y = TRUE
-)
+# Primary Cox models use the accepted five-term CCC adjustment.
+# All four specifications share the six-indicator-complete patient sample.
+fit_primary_cox <- function(exposure_spec) {
+  model_formula <- as.formula(paste(
+    "Surv(surv_time, event) ~", exposure_spec, "+", cox_primary_covariates
+  ))
+  
+  coxph(
+    model_formula,
+    data = cox_analysis_data,
+    ties = "efron", x = TRUE, model = TRUE, y = TRUE,
+    na.action = na.fail
+  )
+}
 
-# Companion model with PFVC as the scaling exposure. Both adjusted Cox models use the same complete-case sample.
-cox_model_pfvc <- coxph(
-  Surv(surv_time, event) ~ pfvc + vtpbw + age_at_admission +
-    sex_category + race_category + sf10 + sofa_total,
-  data = cox_analysis_data, ties = "efron", x = TRUE, model = TRUE, y = TRUE
-)
-
-cox_model_abwpfvc <- coxph(
-  Surv(surv_time, event) ~ abwpfvc + vtabw + age_at_admission +
-    sex_category + race_category + sf10 + sofa_total,
-  data = cox_analysis_data, ties = "efron", x = TRUE, model = TRUE, y = TRUE
-)
-
-cox_model_nchspfvc <- coxph(
-  Surv(surv_time, event) ~ nchspfvc + vtnchs + age_at_admission +
-    sex_category + race_category + sf10 + sofa_total,
-  data = cox_analysis_data, ties = "efron", x = TRUE, model = TRUE, y = TRUE
-)
+cox_model <- fit_primary_cox("pbwpfvc + vtpbw")
+cox_model_pfvc <- fit_primary_cox("pfvc + vtpbw")
+cox_model_abwpfvc <- fit_primary_cox("abwpfvc + vtabw")
+cox_model_nchspfvc <- fit_primary_cox("nchspfvc + vtnchs")
 
 cox_models <- list(
   vtpbw_pbwpfvc = cox_model,
@@ -3519,6 +4834,31 @@ save_model_qc(model_qc, model_qc_path)
 stopifnot(file.exists(model_qc_path), isTRUE(all(unlist(model_qc$checks))))
 
 message("Adjusted Cox-model diagnostics added to: ", model_qc_path)
+
+# =============================================================================
+# Final Cox CCC adjustment policy
+# =============================================================================
+# Primary Cox models already contain the accepted adjustment.
+# No additional paired reference or CCC-adjusted models are fitted here.
+
+model_qc$ccc_sensitivity$survival <- list(
+  formula_policy = list(
+    included_ccc_terms = cox_ccc_included,
+    omitted_ccc_terms = setdiff(ccc_vars, cox_ccc_included),
+    omission_reason = paste0(
+      "Respiratory technology omitted after sparse-event non-estimability ",
+      "in the development-site Cox analysis"
+    )
+  ),
+  sample_source_rows = cox_analysis_data$.source_row,
+  primary_adjustment_formula = cox_primary_covariates
+)
+
+# Primary Cox coefficients use the existing unified outputs.
+
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
 
 # Test whether adjusted hazard ratios remain approximately constant over the 60-day follow-up period.
 cox_zph_objects <- purrr::map(cox_models, function(model) {
@@ -3613,29 +4953,30 @@ cox_race_stratum_checks <- list(
 
 stopifnot(isTRUE(all(unlist(cox_race_stratum_checks))))
 
-cox_model_race_stratified <- coxph(
-  Surv(surv_time, event) ~ pbwpfvc + vtpbw + age_at_admission +
-    sex_category + sf10 + sofa_total + strata(race_category),
-  data = cox_analysis_data, ties = "efron", x = TRUE, model = TRUE, y = TRUE
+# Retain primary adjustment, replacing the race coefficient with race strata.
+cox_race_stratified_covariates <- paste(
+  setdiff(cox_adjustment_vars, "race_category"),
+  collapse = " + "
 )
 
-cox_model_pfvc_race_stratified <- coxph(
-  Surv(surv_time, event) ~ pfvc + vtpbw + age_at_admission +
-    sex_category + sf10 + sofa_total + strata(race_category),
-  data = cox_analysis_data, ties = "efron", x = TRUE, model = TRUE, y = TRUE
-)
+fit_race_stratified_cox <- function(exposure_spec) {
+  model_formula <- as.formula(paste(
+    "Surv(surv_time, event) ~", exposure_spec, "+",
+    cox_race_stratified_covariates, "+ strata(race_category)"
+  ))
+  
+  coxph(
+    model_formula,
+    data = cox_analysis_data,
+    ties = "efron", x = TRUE, model = TRUE, y = TRUE,
+    na.action = na.fail
+  )
+}
 
-cox_model_abwpfvc_race_stratified <- coxph(
-  Surv(surv_time, event) ~ abwpfvc + vtabw + age_at_admission +
-    sex_category + sf10 + sofa_total + strata(race_category),
-  data = cox_analysis_data, ties = "efron", x = TRUE, model = TRUE, y = TRUE
-)
-
-cox_model_nchspfvc_race_stratified <- coxph(
-  Surv(surv_time, event) ~ nchspfvc + vtnchs + age_at_admission +
-    sex_category + sf10 + sofa_total + strata(race_category),
-  data = cox_analysis_data, ties = "efron", x = TRUE, model = TRUE, y = TRUE
-)
+cox_model_race_stratified <- fit_race_stratified_cox("pbwpfvc + vtpbw")
+cox_model_pfvc_race_stratified <- fit_race_stratified_cox("pfvc + vtpbw")
+cox_model_abwpfvc_race_stratified <- fit_race_stratified_cox("abwpfvc + vtabw")
+cox_model_nchspfvc_race_stratified <- fit_race_stratified_cox("nchspfvc + vtnchs")
 
 cox_race_stratified_models <- list(
   vtpbw_pbwpfvc = cox_model_race_stratified,
@@ -3818,6 +5159,8 @@ cox_sensitivity_labels <- c(
   sf10 = "SF ratio (per 10)",
   sofa_total = "pSOFA total"
 )
+
+cox_sensitivity_labels <- c(cox_sensitivity_labels, ccc_regression_labels)
 
 cox_race_stratified_tables <- purrr::map(cox_race_stratified_models, function(model) {
   tbl_regression(model, exponentiate = TRUE) %>%
@@ -4284,7 +5627,8 @@ message("Cox-model summary saved to: ", cox_summary_output_path)
 demo_required_vars <- c(
   "age_at_admission", "sex_category", "race_category", "height_cm", "sf_ratio", "sofa_total", "bmi",
   "pbw", "pbw_nchs", "abw", "pfvc", "vtpbw", "vtnchs", "vtabw", "vtpfvc",
-  "pbwpfvc", "nchspfvc", "abwpfvc", "ers_pbw", "ers_pfvc", "mortality_event_60", "dp"
+  "pbwpfvc", "nchspfvc", "abwpfvc", "ers_pbw", "ers_pfvc", "mortality_event_60", "dp",
+  ccc_vars
 )
 
 missing_demo_vars <- setdiff(demo_required_vars, names(cross_sectional))
@@ -4306,8 +5650,18 @@ demo_data <- cross_sectional %>%
     ers_pfvc_z = as.numeric(scale(ers_pfvc))
   )
 
-demo_covars <- "age_at_admission + sex_category + race_category + height10 + sf10 + sofa_total"
+demo_base_covars <- "age_at_admission + sex_category + race_category + height10 + sf10 + sofa_total"
+
+demo_continuous_ccc_vars <- setdiff(ccc_vars, "ccc_resp_other")
+
+demo_covars <- paste(
+  demo_base_covars, "+", paste(demo_continuous_ccc_vars, collapse = " + ")
+)
 demo_covars_bmi <- paste(demo_covars, "+ bmi")
+
+demo_covars_mortality <- paste(
+  demo_base_covars, "+", paste(mortality_ccc_included, collapse = " + ")
+)
 
 demo_numeric_vars <- c(
   "age_at_admission", "height_cm", "height10", "sf_ratio", "sf10", "sofa_total", "bmi",
@@ -4400,6 +5754,31 @@ stopifnot(file.exists(model_qc_path), isTRUE(all(unlist(model_qc$checks))))
 
 message("Demographic-bias input QC added to: ", model_qc_path)
 
+# Preserve standardization calculated from the source cohort above.
+# CCC completeness restricts model fitting, not the standardization reference.
+demo_ccc_sample_summary <- tibble(
+  n_source = nrow(demo_data),
+  n_ccc_complete = sum(complete.cases(demo_data[ccc_vars])),
+  n_excluded_missing_ccc = n_source - n_ccc_complete
+)
+
+demo_data <- demo_data %>%
+  filter(if_all(all_of(ccc_vars), ~ !is.na(.x)))
+
+if (nrow(demo_data) == 0L) {
+  stop("No CCC-complete observations remain for demographic models.")
+}
+
+model_qc$demographic_bias$ccc_adjustment <- list(
+  continuous_terms = demo_continuous_ccc_vars,
+  mortality_terms = mortality_ccc_included,
+  sample_summary = demo_ccc_sample_summary,
+  standardization_policy = "Preserve z-scores calculated from the source cohort before CCC filtering"
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
 # Each entry contains a fitted model and metadata for the unified long-format table.
 demo_models <- list()
 
@@ -4429,9 +5808,9 @@ for (v in names(demo_z_outcomes)) {
   )
 }
 
-# Sixty-day mortality logistic model. BMI is not included in this demographic model.
+# Mortality retains its four accepted CCC terms; BMI remains excluded.
 if (has_mortality_variation) {
-  fstr <- paste("mortality_event_60 ~", demo_covars)
+  fstr <- paste("mortality_event_60 ~", demo_covars_mortality)
   
   demo_models[["60-day Mortality"]] <- list(
     model = glm(as.formula(fstr), data = demo_data, family = binomial),
@@ -4557,7 +5936,12 @@ demo_term_labels <- c(
   height10 = "Height (per 10 cm)",
   sf10 = "SF ratio (per 10)",
   sofa_total = "pSOFA",
-  bmi = "BMI"
+  bmi = "BMI",
+  ccc_neuro_mechanics = "Mechanics-relevant neurologic disease: present vs absent",
+  ccc_neuro_other = "Other neurologic disease: present vs absent",
+  ccc_resp_chronic_malformation = "Chronic respiratory disease/malformations: present vs absent",
+  ccc_asthma = "Asthma: present vs absent",
+  ccc_resp_technology = "Respiratory technology evidence: present vs absent"
 )
 
 demo_outcome_order <- c(
@@ -4677,7 +6061,8 @@ stopifnot(file.exists(broad_pfvc_path))
 broad_pfvc <- read_parquet(broad_pfvc_path)
 
 broad_pfvc_required_vars <- c(
-  "pfvc", "pbw", "pbw_nchs", "abw", "age_at_admission", "sex_category", "race_category"
+  "pfvc", "pbw", "pbw_nchs", "abw", "age_at_admission", "sex_category", "race_category",
+  ccc_vars
 )
 missing_broad_pfvc_vars <- setdiff(broad_pfvc_required_vars, names(broad_pfvc))
 
@@ -4725,7 +6110,11 @@ broad_pfvc_input_checks <- list(
   broad_pfvc_numeric_variables_have_no_infinite_values = !any(
     broad_pfvc_input_qc$n_infinite > 0L, na.rm = TRUE
   ),
-  broad_pfvc_variables_have_variation = all(broad_pfvc_input_qc$n_unique_nonmissing >= 2L),
+  broad_pfvc_variables_have_variation = all(
+    broad_pfvc_input_qc$n_unique_nonmissing[
+      !broad_pfvc_input_qc$variable %in% ccc_vars
+    ] >= 2L
+  ),
   broad_pfvc_sex_values_valid = all(broad_pfvc_sex_values %in% c("Female", "Male")),
   broad_pfvc_race_values_valid = all(broad_pfvc_race_values %in% c("BLACK", "OTHER", "WHITE")),
   broad_pfvc_analysis_sample_nonempty = nrow(broad_pfvc_analysis_data) > 0L,
@@ -4757,20 +6146,31 @@ stopifnot(file.exists(model_qc_path), isTRUE(all(unlist(model_qc$checks))))
 
 message("PFVC-versus-PBW input QC added to: ", model_qc_path)
 
-pfvc_vs_pbw_model <- lm(
-  pfvc ~ pbw + age_at_admission + sex_category + race_category,
-  data = broad_pfvc_analysis_data, x = TRUE, y = TRUE, model = TRUE
+# Match the four-term CCC adjustment used in Script 05 prediction-formula models.
+# All three weight methods retain the same broad complete-case sample.
+pfvc_weight_ccc_vars <- mortality_ccc_included
+
+pfvc_weight_covariates <- paste(
+  "age_at_admission + sex_category + race_category +",
+  paste(pfvc_weight_ccc_vars, collapse = " + ")
 )
 
-pfvc_vs_nchs_model <- lm(
-  pfvc ~ pbw_nchs + age_at_admission + sex_category + race_category,
-  data = broad_pfvc_analysis_data, x = TRUE, y = TRUE, model = TRUE
-)
+fit_pfvc_weight_model <- function(weight_variable) {
+  model_formula <- as.formula(paste(
+    "pfvc ~", weight_variable, "+", pfvc_weight_covariates
+  ))
+  
+  lm(
+    model_formula,
+    data = broad_pfvc_analysis_data,
+    x = TRUE, y = TRUE, model = TRUE,
+    na.action = na.fail
+  )
+}
 
-pfvc_vs_abw_model <- lm(
-  pfvc ~ abw + age_at_admission + sex_category + race_category,
-  data = broad_pfvc_analysis_data, x = TRUE, y = TRUE, model = TRUE
-)
+pfvc_vs_pbw_model <- fit_pfvc_weight_model("pbw")
+pfvc_vs_nchs_model <- fit_pfvc_weight_model("pbw_nchs")
+pfvc_vs_abw_model <- fit_pfvc_weight_model("abw")
 
 pfvc_vs_weight_models <- list(
   mclaren = pfvc_vs_pbw_model,
@@ -4953,7 +6353,7 @@ stopifnot(file.exists(model_qc_path), isTRUE(all(unlist(model_qc$checks))))
 
 message("PFVC-versus-PBW model diagnostics added to: ", model_qc_path)
 
-pfvc_vs_pbw_formula <- "pfvc ~ pbw + age_at_admission + sex_category + race_category"
+pfvc_vs_pbw_formula <- paste(deparse(formula(pfvc_vs_pbw_model)), collapse = " ")
 
 pfvc_vs_pbw_labels <- c(
   pbw = "Predicted body weight (kg)",
@@ -4961,6 +6361,8 @@ pfvc_vs_pbw_labels <- c(
   sex_category = "Sex",
   race_category = "Race"
 )
+
+pfvc_vs_pbw_labels <- c(pfvc_vs_pbw_labels, ccc_regression_labels)
 
 pfvc_vs_pbw_results_hc3 <- tidy_lm_hc3(pfvc_vs_pbw_model)
 
@@ -5041,6 +6443,11 @@ pfvc_vs_weight_regression_labels <- c(
   age_at_admission = "Age at admission (per year)",
   sex_category = "Sex",
   race_category = "Race"
+)
+
+pfvc_vs_weight_regression_labels <- c(
+  pfvc_vs_weight_regression_labels,
+  ccc_regression_labels
 )
 
 pfvc_vs_weight_tables <- purrr::map(pfvc_vs_weight_models, function(model) {
@@ -5127,8 +6534,13 @@ stopifnot(file.exists(model_qc_path), isTRUE(all(unlist(model_qc$checks))))
 # results are generated from the current analysis sample.
 
 pfvc_vs_pbw_spline_model <- lm(
-  pfvc ~ ns(pbw, df = 4) + ns(age_at_admission, df = 4) + sex_category + race_category,
-  data = broad_pfvc_analysis_data, x = TRUE, y = TRUE, model = TRUE
+  as.formula(paste(
+    "pfvc ~ ns(pbw, df = 4) + ns(age_at_admission, df = 4) + sex_category + race_category +",
+    paste(pfvc_weight_ccc_vars, collapse = " + ")
+  )),
+  data = broad_pfvc_analysis_data,
+  x = TRUE, y = TRUE, model = TRUE,
+  na.action = na.fail
 )
 
 pfvc_vs_pbw_spline_matrix <- model.matrix(pfvc_vs_pbw_spline_model)
@@ -5251,9 +6663,14 @@ message("Nonlinear PFVC-versus-PBW sensitivity analysis added to: ", model_qc_pa
 # relationships of PFVC with PBW and age to differ by sex while retaining race as a categorical covariate.
 
 pfvc_vs_pbw_interaction_model <- lm(
-  pfvc ~ ns(pbw, df = 4) * sex_category +
-    ns(age_at_admission, df = 4) * sex_category + race_category,
-  data = broad_pfvc_analysis_data, x = TRUE, y = TRUE, model = TRUE
+  as.formula(paste(
+    "pfvc ~ ns(pbw, df = 4) * sex_category +",
+    "ns(age_at_admission, df = 4) * sex_category + race_category +",
+    paste(pfvc_weight_ccc_vars, collapse = " + ")
+  )),
+  data = broad_pfvc_analysis_data,
+  x = TRUE, y = TRUE, model = TRUE,
+  na.action = na.fail
 )
 
 pfvc_vs_pbw_interaction_matrix <- model.matrix(pfvc_vs_pbw_interaction_model)
@@ -5479,7 +6896,8 @@ for (outcome_name in names(continuous_outcomes)) {
 results_long <- c(
   results_long,
   purrr::imap(vfd_cr_models, function(model, model_name) {
-    tidy_results <- broom::tidy(model, conf.int = TRUE, exponentiate = TRUE)
+    tidy_results <- broom::tidy(model, conf.int = TRUE, exponentiate = TRUE) %>%
+      mutate(std.error = robust.se)
     
     assemble_model_results(
       tidy_results = tidy_results,
@@ -5584,13 +7002,16 @@ message("Primary adjusted long-format regression results validated.")
 # ratios above continue to use the primary adjusted models.
 
 make_formula_unadj <- function(lhs, exposure, determinant) {
-  cov <- model_covariates(determinant, adjusted = FALSE)
-  rhs <- if (cov == "") exposure else paste(exposure, "+", cov)
+  cov <- continuous_model_covariates(determinant, adjusted = FALSE)
+  rhs <- paste(exposure, "+", cov)
   as.formula(paste(lhs, "~", rhs))
 }
 
 fit_vfd_finegray_minimal <- function(exposure_spec) {
-  model_rhs <- paste(exposure_spec, "+", covariates_unadj)
+  model_rhs <- paste(
+    exposure_spec, "+", covariates_unadj, "+",
+    paste(vfd_ccc_included, collapse = " + ")
+  )
   
   finegray_data <- vfd_analysis_data %>%
     mutate(vfd_status_f = factor(
@@ -5625,8 +7046,14 @@ fit_vfd_finegray_minimal <- function(exposure_spec) {
 }
 
 if (!is.null(mortality_models)) {
+  mortality_minimal_covariates <- paste(
+    covariates_unadj, "+", paste(mortality_ccc_included, collapse = " + ")
+  )
+  
   mortality_minimal_vars <- unique(c(
-    mortality_outcome, exposure_vars, all.vars(as.formula(paste("~", covariates_unadj)))
+    mortality_outcome, exposure_vars,
+    all.vars(as.formula(paste("~", mortality_minimal_covariates))),
+    ccc_vars
   ))
   
   mortality_minimal_data <- cross_sectional %>%
@@ -5635,9 +7062,15 @@ if (!is.null(mortality_models)) {
     drop_na(all_of(mortality_minimal_vars))
   
   mortality_models_minimal <- purrr::map(exposure_specs, function(exposure_spec) {
+    model_formula <- as.formula(paste(
+      mortality_outcome, "~", exposure_spec, "+", mortality_minimal_covariates
+    ))
+    
     glm(
-      make_formula_unadj(mortality_outcome, exposure_spec, exposure_spec),
-      data = mortality_minimal_data, family = binomial
+      model_formula,
+      data = mortality_minimal_data,
+      family = binomial,
+      na.action = na.fail
     )
   })
   
@@ -5727,9 +7160,11 @@ continuous_minimal_qc <- list()
 for (outcome_name in names(continuous_outcomes)) {
   outcome_var <- continuous_outcomes[[outcome_name]]$var
   outcome_label <- continuous_outcomes[[outcome_name]]$label
-  minimal_covariates <- model_covariates(outcome_var, adjusted = FALSE)
+  minimal_covariates <- continuous_model_covariates(outcome_var, adjusted = FALSE)
   minimal_covariate_vars <- all.vars(as.formula(paste("~", minimal_covariates)))
-  minimal_required_vars <- unique(c(outcome_var, exposure_vars, minimal_covariate_vars))
+  minimal_required_vars <- unique(c(
+    outcome_var, exposure_vars, minimal_covariate_vars, ccc_vars
+  ))
   
   continuous_minimal_data <- cross_sectional %>%
     mutate(.source_row = row_number()) %>%
@@ -5919,7 +7354,8 @@ stopifnot(isTRUE(all(unlist(vfd_minimal_checks))))
 results_long <- c(
   results_long,
   purrr::imap(vfd_cr_models_minimal, function(model, model_name) {
-    tidy_results <- broom::tidy(model, conf.int = TRUE, exponentiate = TRUE)
+    tidy_results <- broom::tidy(model, conf.int = TRUE, exponentiate = TRUE) %>%
+      mutate(std.error = robust.se)
     
     assemble_model_results(
       tidy_results = tidy_results,
@@ -5952,25 +7388,29 @@ stopifnot(file.exists(model_qc_path), isTRUE(all(unlist(model_qc$checks))))
 message("Minimally adjusted Fine-Gray results added to the unified results.")
 
 if (length(cox_models) == 4L) {
-  cox_unadj <- coxph(
-    Surv(surv_time, event) ~ pbwpfvc + vtpbw + sf10 + sofa_total,
-    data = cox_analysis_data, ties = "efron", x = TRUE, model = TRUE, y = TRUE
+  # Retain severity, oxygenation, and the five accepted Cox CCC terms.
+  # Minimally adjusted models omit age, sex, and race.
+  cox_minimal_covariates <- paste(
+    covariates_unadj, "+", paste(cox_ccc_included, collapse = " + ")
   )
   
-  cox_pfvc_unadj <- coxph(
-    Surv(surv_time, event) ~ pfvc + vtpbw + sf10 + sofa_total,
-    data = cox_analysis_data, ties = "efron", x = TRUE, model = TRUE, y = TRUE
-  )
+  fit_minimal_cox <- function(exposure_spec) {
+    model_formula <- as.formula(paste(
+      "Surv(surv_time, event) ~", exposure_spec, "+", cox_minimal_covariates
+    ))
+    
+    coxph(
+      model_formula,
+      data = cox_analysis_data,
+      ties = "efron", x = TRUE, model = TRUE, y = TRUE,
+      na.action = na.fail
+    )
+  }
   
-  cox_abwpfvc_unadj <- coxph(
-    Surv(surv_time, event) ~ abwpfvc + vtabw + sf10 + sofa_total,
-    data = cox_analysis_data, ties = "efron", x = TRUE, model = TRUE, y = TRUE
-  )
-  
-  cox_nchspfvc_unadj <- coxph(
-    Surv(surv_time, event) ~ nchspfvc + vtnchs + sf10 + sofa_total,
-    data = cox_analysis_data, ties = "efron", x = TRUE, model = TRUE, y = TRUE
-  )
+  cox_unadj <- fit_minimal_cox("pbwpfvc + vtpbw")
+  cox_pfvc_unadj <- fit_minimal_cox("pfvc + vtpbw")
+  cox_abwpfvc_unadj <- fit_minimal_cox("abwpfvc + vtabw")
+  cox_nchspfvc_unadj <- fit_minimal_cox("nchspfvc + vtnchs")
   
   cox_models_minimal <- list(
     vtpbw_pbwpfvc = cox_unadj,
@@ -6461,53 +7901,63 @@ residual_conf_rows <- function(model_lin, model_spl, model_spec, analysis, type,
 
 mortality_models_spline <- if (!is.null(mortality_models)) {
   purrr::map(exposure_specs, function(exposure_spec) {
-    formula_str <- paste("mortality_event_60 ~", exposure_spec, "+", spline_covars)
+    formula_str <- paste(
+      "mortality_event_60 ~", exposure_spec, "+", spline_covars, "+",
+      paste(mortality_ccc_included, collapse = " + ")
+    )
     
     glm(
-      as.formula(formula_str), data = mortality_analysis_data,
-      family = binomial, x = TRUE, y = TRUE, model = TRUE
+      as.formula(formula_str),
+      data = mortality_analysis_data,
+      family = binomial,
+      x = TRUE, y = TRUE, model = TRUE,
+      na.action = na.fail
     )
   })
 } else {
   NULL
 }
 
-cox_model_spline <- if (!is.null(cox_model)) {
+# Change only the functional form of age; retain primary Cox CCC adjustment.
+cox_spline_covariates <- paste(
+  paste0("ns(age_at_admission, df = ", AGE_SPLINE_DF, ")"),
+  paste(setdiff(cox_adjustment_vars, "age_at_admission"), collapse = " + "),
+  sep = " + "
+)
+
+fit_spline_age_cox <- function(exposure_spec) {
+  model_formula <- as.formula(paste(
+    "Surv(surv_time, event) ~", exposure_spec, "+", cox_spline_covariates
+  ))
+  
   coxph(
-    Surv(surv_time, event) ~ pbwpfvc + vtpbw + ns(age_at_admission, df = AGE_SPLINE_DF) +
-      sex_category + race_category + sf10 + sofa_total,
-    data = cox_analysis_data, ties = "efron", x = TRUE, y = TRUE, model = TRUE
+    model_formula,
+    data = cox_analysis_data,
+    ties = "efron", x = TRUE, y = TRUE, model = TRUE,
+    na.action = na.fail
   )
+}
+
+cox_model_spline <- if (!is.null(cox_model)) {
+  fit_spline_age_cox("pbwpfvc + vtpbw")
 } else {
   NULL
 }
 
 cox_model_pfvc_spline <- if (!is.null(cox_model_pfvc)) {
-  coxph(
-    Surv(surv_time, event) ~ pfvc + vtpbw + ns(age_at_admission, df = AGE_SPLINE_DF) +
-      sex_category + race_category + sf10 + sofa_total,
-    data = cox_analysis_data, ties = "efron", x = TRUE, y = TRUE, model = TRUE
-  )
+  fit_spline_age_cox("pfvc + vtpbw")
 } else {
   NULL
 }
 
 cox_model_nchspfvc_spline <- if (!is.null(cox_model_nchspfvc)) {
-  coxph(
-    Surv(surv_time, event) ~ nchspfvc + vtnchs + ns(age_at_admission, df = AGE_SPLINE_DF) +
-      sex_category + race_category + sf10 + sofa_total,
-    data = cox_analysis_data, ties = "efron", x = TRUE, y = TRUE, model = TRUE
-  )
+  fit_spline_age_cox("nchspfvc + vtnchs")
 } else {
   NULL
 }
 
 cox_model_abwpfvc_spline <- if (!is.null(cox_model_abwpfvc)) {
-  coxph(
-    Surv(surv_time, event) ~ abwpfvc + vtabw + ns(age_at_admission, df = AGE_SPLINE_DF) +
-      sex_category + race_category + sf10 + sofa_total,
-    data = cox_analysis_data, ties = "efron", x = TRUE, y = TRUE, model = TRUE
-  )
+  fit_spline_age_cox("abwpfvc + vtabw")
 } else {
   NULL
 }
@@ -6527,7 +7977,8 @@ fit_vfd_finegray_spline <- function(exposure_spec) {
   
   model_rhs <- paste(
     exposure_spec, "+ race_category +", paste(spline_basis_vars, collapse = " + "),
-    "+ sex_category + sofa_total + sf10"
+    "+ sex_category + sofa_total + sf10 +",
+    paste(vfd_ccc_included, collapse = " + ")
   )
   
   finegray_formula <- as.formula(
@@ -7985,6 +9436,138 @@ save_model_qc(model_qc, model_qc_path)
 stopifnot(file.exists(model_qc_path), isTRUE(all(unlist(model_qc$checks))))
 
 message("Final site-QC figures validated and added to: ", model_qc_path)
+
+# =============================================================================
+# Retained exploratory interaction exports
+# =============================================================================
+# Primary CCC-adjusted coefficients use the existing unified regression outputs.
+# Individual-modifier interaction contrasts remain separate exploratory artifacts.
+
+# Separate interaction contrasts from the existing adjustment-sensitivity export.
+asthma_interaction_results <- bind_rows(
+  mortality_asthma_results %>%
+    mutate(analysis = "60-day mortality", model_family = "logistic", .before = 1),
+  vfd_asthma_results %>%
+    mutate(analysis = "28-day liberation", model_family = "finegray", .before = 1)
+) %>%
+  mutate(
+    site = site_name,
+    modifier = "ccc_asthma",
+    .before = 1
+  )
+
+asthma_interaction_output_path <- file.path(
+  table_dir,
+  paste0("asthma_interaction_sensitivity_", site_name, ".csv")
+)
+
+write_csv(asthma_interaction_results, asthma_interaction_output_path)
+
+model_qc$ccc_sensitivity$asthma_interaction$output <- list(
+  csv_path = asthma_interaction_output_path,
+  row_count = nrow(asthma_interaction_results),
+  interpretation = paste0(
+    "Exploratory interaction contrasts and conditional exposure slopes. ",
+    "One-unit exposure contrasts retain each exposure's original units. ",
+    "P values are unadjusted across the related exposure specifications."
+  )
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+message("Asthma interaction sensitivity saved to: ", asthma_interaction_output_path)
+
+chronic_resp_interaction_results <- bind_rows(
+  mortality_chronic_resp_results %>%
+    mutate(analysis = "60-day mortality", model_family = "logistic", .before = 1),
+  vfd_chronic_resp_results %>%
+    mutate(analysis = "28-day liberation", model_family = "finegray", .before = 1)
+) %>%
+  mutate(
+    site = site_name,
+    modifier = chronic_resp_modifier,
+    .before = 1
+  )
+
+chronic_resp_interaction_output_path <- file.path(
+  table_dir,
+  paste0("chronic_resp_interaction_sensitivity_", site_name, ".csv")
+)
+
+write_csv(chronic_resp_interaction_results, chronic_resp_interaction_output_path)
+
+model_qc$ccc_sensitivity$chronic_resp_interaction$output <- list(
+  csv_path = chronic_resp_interaction_output_path,
+  row_count = nrow(chronic_resp_interaction_results),
+  interpretation = paste0(
+    "Exploratory interaction contrasts and conditional exposure slopes. ",
+    "One-unit contrasts retain each exposure's original units. ",
+    "P values are unadjusted across related exposure specifications."
+  )
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+message(
+  "Chronic respiratory interaction sensitivity saved to: ",
+  chronic_resp_interaction_output_path
+)
+
+neuro_interaction_results <- bind_rows(
+  mortality_neuro_results %>%
+    mutate(analysis = "60-day mortality", model_family = "logistic", .before = 1),
+  vfd_neuro_results %>%
+    mutate(analysis = "28-day liberation", model_family = "finegray", .before = 1)
+) %>%
+  mutate(
+    site = site_name,
+    modifier = neuro_mechanics_modifier,
+    .before = 1
+  )
+
+neuro_interaction_output_path <- file.path(
+  table_dir,
+  paste0("neuro_mechanics_interaction_sensitivity_", site_name, ".csv")
+)
+
+write_csv(neuro_interaction_results, neuro_interaction_output_path)
+
+model_qc$ccc_sensitivity$neuro_mechanics_interaction$output <- list(
+  csv_path = neuro_interaction_output_path,
+  row_count = nrow(neuro_interaction_results),
+  interpretation = paste0(
+    "Exploratory interaction contrasts and conditional exposure slopes. ",
+    "One-unit contrasts retain each exposure's original units. ",
+    "P values are unadjusted across related exposure specifications."
+  )
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
+
+message("Neurologic interaction sensitivity saved to: ", neuro_interaction_output_path)
+
+# =============================================================================
+# Retain the final CCC adjustment configuration
+# =============================================================================
+
+model_qc$adjustment_covariates$ccc_configuration <- list(
+  indicator_columns = ccc_vars,
+  completeness_policy = "All six indicators required in the agreed regression comparison samples",
+  mortality_terms = mortality_ccc_included,
+  liberation_terms = vfd_ccc_included,
+  cox_terms = cox_ccc_included,
+  continuous_policy = model_qc$ccc_sensitivity$continuous_outcomes$formula_policy,
+  demographic_continuous_terms = demo_continuous_ccc_vars,
+  demographic_mortality_terms = mortality_ccc_included,
+  prediction_formula_terms = pfvc_weight_ccc_vars,
+  classification = cohort_diagnostics$resp_mechanics_ccc$provenance
+)
+model_qc$metadata$updated_at <- Sys.time()
+
+save_model_qc(model_qc, model_qc_path)
 
 # =============================================================================
 # Script 04 completion

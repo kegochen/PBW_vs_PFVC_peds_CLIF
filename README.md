@@ -8,34 +8,49 @@ physiology measures.
 See the [Executive summary](EXECUTIVE_SUMMARY.md) for the study question,
 cohort definitions, and analysis workflow.
 
-## Current status
+Version 3a adds study-specific chronic-condition adjustment to the pediatric
+PBW-versus-PFVC analysis. Version 3 is preserved as the baseline at commit
+`26e023228ebe6a27c2cb8364c97921b051f81420`.
 
-The full analysis and three-report workflow completed in one Windows RStudio
-session. PDF publication, the normalization report-inclusive manifest, and
-reporting-status synchronization passed readback checks. Report layouts were
-visually reviewed.
+The updated analysis completed on Windows, followed by separate rendering and
+verified publication of all three diagnostic PDFs. Reporting-status
+synchronization and the normalization report-inclusive manifest passed the
+renderer checks. All three reports were visually reviewed.
 
-Windows restoration passed in a separate short-path test copy. The test library
-contained 186 packages; eight lockfile packages were supplied by R's system
-library. All 194 versions and the pinned GitHub commit matched, and all 36
-declared dependencies loaded.
+Local version 3a execution used the existing baseline project library through
+an explicit development override. A separate version 3a library restoration
+has not been tested. The prior version 3 short-path Windows restoration
+validation remains baseline evidence, not a new version 3a setup test.
 
-The runner uses separate R subprocesses and calls `gc()` after each analysis
-script to collect unused parent-session memory. The full pipeline completed
-successfully after this change, which is retained in the standard workflow.
+The chronic-condition groups are customized from pediatric Complex Chronic
+Conditions version 3, with asthma added separately. Classification uses
+present-on-admission diagnoses from the selected index hospitalization.
+Groups may overlap, and unavailable diagnosis information is not recoded as
+condition absence.
 
-GitHub contains shared code, configuration templates, references, and the
-lockfile. Site data and generated results remain local. Cross-site pooling is
-not implemented.
+See [CCC adjustment policy](reference-data/ccc_adjustment_policy.md) for group
+definitions, fixed model-family term sets, and missingness. Individual-modifier
+interactions remain exploratory, with unadjusted P values across related
+specifications. See [Deferred pooled analyses](reference-data/ccc_pooled_candidates.md)
+for candidates not enabled for execution.
+
+The runner uses separate R subprocesses and collects unused parent-process
+memory after each successful analysis script. Reporting controls nested R
+startup and library routing and calls `gc()` between validated report renders.
+
+The published repository contains shared code, configuration templates,
+references, and the lockfile; site data and generated results remain local.
+Version 3a publication is pending. Buddy-site testing, pooled exploratory
+analyses, and the separate growth-method comparison remain deferred.
 
 ## Repository structure
 
-- `code/00_run_pipeline_v3.R`: function-based local workflow runner.
-- `code/01_cohort_identification_v3.R`: cohort identification.
-- `code/02_quality_checks_v3.R`: input quality checks and cleaning.
-- `code/03_variable_derivation_v3.R`: clinical and analysis-variable derivation.
-- `code/04_analysis_v3.R`: primary analyses and model diagnostics.
-- `code/05_normalization_analysis_v3.R`: normalization discordance and exploratory
+- `code/00_run_pipeline_v3a.R`: function-based local workflow runner.
+- `code/01_cohort_identification_v3a.R`: cohort identification.
+- `code/02_quality_checks_v3a.R`: input quality checks and cleaning.
+- `code/03_variable_derivation_v3a.R`: clinical and analysis-variable derivation.
+- `code/04_analysis_v3a.R`: primary analyses and model diagnostics.
+- `code/05_normalization_analysis_v3a.R`: normalization discordance and exploratory
   prognostic analyses.
 - `utils/`: configuration, clinical helpers, diagnostic QMDs, and the separate
   reporting utility.
@@ -142,8 +157,21 @@ the loader stops rather than selecting one silently. It also stops if an
 expected filename identifies a directory.
 
 Other required table stems are `patient`, `hospitalization`, `adt`, `vitals`,
-`labs`, and `patient_procedures`, each with the `clif_` prefix and configured
-extension.
+`labs`, `patient_procedures`, and `hospital_diagnosis`, each with the `clif_`
+prefix and configured extension.
+
+The diagnosis input requires:
+
+- `hospitalization_id`
+- `diagnosis_code`
+- `diagnosis_code_format`
+- `poa_present`
+
+Only index-hospitalization rows with `poa_present == 1` and
+`diagnosis_code_format == "ICD10CM"` contribute to classification. All diagnosis
+positions are eligible. Missing code-system labels are not inferred from code
+text. See the [CCC policy](reference-data/ccc_adjustment_policy.md) for the
+indicator missingness and fixed adjustment rules.
 
 The medication input must contain continuous administrations only.
 Filename aliases do not rename columns, convert units, standardize clinical
@@ -245,7 +273,52 @@ reporting_result <- run_pbwpfvc_reports()
 ```
 
 Reporting reads saved diagnostics and repository QMDs without refitting models.
-It produces cohort, analysis, and normalization PDFs.
+It produces cohort, analysis, and normalization PDFs. The renderer passes the
+selected libraries to nested R processes and disables their startup profiles
+to avoid unintended project bootstrapping.
+
+### Explicit script ranges
+
+The default analysis call runs Scripts 01–05. An explicit range can reuse
+completed prerequisites:
+
+```r
+analysis_result <- run_pbwpfvc_analysis(
+  first_script = 4L,
+  last_script = 5L
+)
+```
+
+Use a partial range only when its saved prerequisite inputs are current.
+The runner stops at the first failure and retains per-script warnings.
+
+### Optional development library override
+
+Normal execution uses this repository's project library plus R's base library.
+For development, an existing compatible project library can be selected with
+`PBWPFVC_PROJECT_LIBRARY`. This does not restore, install, or update packages.
+
+```r
+local({
+  previous_library <- Sys.getenv("PBWPFVC_PROJECT_LIBRARY", unset = NA_character_)
+
+  on.exit({
+    if (is.na(previous_library)) {
+      Sys.unsetenv("PBWPFVC_PROJECT_LIBRARY")
+    } else {
+      Sys.setenv(PBWPFVC_PROJECT_LIBRARY = previous_library)
+    }
+  }, add = TRUE)
+
+  Sys.setenv(PBWPFVC_PROJECT_LIBRARY = "C:/projects/existing_project_library")
+
+  analysis_result <<- run_pbwpfvc_analysis()
+})
+```
+
+Replace the example with an existing R-version/platform-compatible project
+library. The override is a development option, not proof of dependency-version
+compatibility. The caller still needs `renv` and `callr` available.
 
 ### Warnings
 

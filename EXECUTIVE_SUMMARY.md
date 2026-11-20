@@ -10,23 +10,22 @@ not measured lung volumes.
 
 ## Implementation status
 
-The full single-site analysis and three-report workflow completed in one Windows
-RStudio session. Final PDF publication, the normalization report-inclusive
-manifest, and reporting-status synchronization passed readback checks. Report
-layouts were visually reviewed.
+Version 3a adds study-specific chronic-condition adjustment. Version 3 is
+preserved at baseline commit `26e023228ebe6a27c2cb8364c97921b051f81420`.
 
-A short-path Windows restoration installed 186 packages; eight lockfile packages
-were supplied by R's system library. All 194 versions and the pinned GitHub
-commit matched, and all 36 declared dependencies loaded. The test used an
-existing R installation and restoration tools. This project supports Windows
-execution.
+The updated analysis completed on Windows. Separate reporting published all
+three diagnostic PDFs, validated the normalization report-inclusive manifest,
+and synchronized reporting status into the saved diagnostics. All three
+reports were visually reviewed.
 
-The runner uses separate child processes and calls `gc()` between analysis
-scripts. The full pipeline completed successfully after this change, which
-is retained in the standard workflow.
+Local version 3a execution used the existing baseline project library through
+an explicit override. Separate version 3a dependency restoration has not been
+tested. The completed short-path Windows restoration test remains version 3
+baseline evidence.
 
-GitHub contains shared code, configuration templates, references, and the
-lockfile. Site data and generated results remain local.
+The published repository contains shared code, templates, references, and the
+lockfile. Version 3a publication is pending. Site data and generated results
+remain local.
 
 ## Cohort and scientific definitions
 
@@ -38,33 +37,61 @@ Respiratory intubation anchors are identified independently of procedure-code
 observed fallback, during confirmed invasive support within one hour of a
 qualifying respiratory anchor, together with ICU eligibility.
 
-Subsequent derivation requires an eligible complete invasive timepoint meeting
+Subsequent derivation requires a complete eligible invasive timepoint meeting
 at least one hypoxemia criterion: OI >= 4, OSI >= 5, PF ratio <= 300, or
 SF ratio <= 250. VT/PBW is not restricted to a 6–8 mL/kg eligibility band.
 
-The index-selection rule prefers the first qualifying timepoint with valid
-driving pressure within the existing six-hour window; otherwise it selects
-the first qualifying timepoint.
+Index selection prefers the first qualifying timepoint with valid driving
+pressure within the existing six-hour window; otherwise it selects the first
+qualifying timepoint.
 
-## What the pipeline does
+## Chronic-condition adjustment
+
+Six overlapping diagnosis groups are customized from pediatric Complex Chronic
+Conditions version 3, with asthma added separately:
+
+- Mechanics-relevant neurologic/neuromuscular disease.
+- Other neurologic disease.
+- Chronic respiratory disease/malformations.
+- Other respiratory disease.
+- Asthma.
+- Respiratory technology evidence.
+
+Classification uses diagnoses present on admission during the selected index
+hospitalization, with an explicit ICD10CM code-system label. All diagnosis
+positions are eligible. Prior hospitalizations and procedure codes do not
+contribute.
+
+Observed qualifying evidence is coded present. Absence requires usable
+present-on-admission diagnosis information without unresolved coding gaps;
+otherwise the indicator remains missing. Respiratory technology evidence does
+not specifically establish home invasive ventilation.
+
+Fixed model-family adjustment sets retain the terms that were estimable during
+development. All six indicators remain available descriptively and in the
+applicable regression completeness requirements. See
+[CCC adjustment policy](reference-data/ccc_adjustment_policy.md) for definitions,
+missingness, and formula omissions.
+
+## Analysis workflow
 
 ### Script 01 — Cohort identification
 
-Loads the required CLIF tables, reconciles identifiers, identifies respiratory
-anchors and one-hour tidal-volume eligibility, selects index hospitalizations,
-processes respiratory support, extracts clinical inputs, and starts the
-hospitalization-level attrition log.
+Loads CLIF tables, reconciles identifiers, identifies respiratory anchors and
+one-hour tidal-volume eligibility, selects index hospitalizations, processes
+respiratory support, extracts clinical inputs, classifies chronic-condition
+diagnoses, and starts the hospitalization-level attrition log.
 
 Height uses index-hospitalization vitals first, optional linked supplemental
 height second, then an eligible cross-encounter donor. Donor eligibility uses
-hospitalization admission timestamps and the existing age-dependent windows.
+hospitalization admission timestamps and existing age-dependent windows.
 Supplemental measurement dates remain unparsed provenance text.
 
 ### Script 02 — Quality checks
 
 Applies retained laboratory, vital-sign, height, and respiratory-support
-thresholds. Preserves detailed availability, deduplication, provenance,
-and cleaning diagnostics.
+thresholds. Preserves availability, deduplication, provenance, and cleaning
+diagnostics.
 
 ### Script 03 — Variable derivation
 
@@ -72,9 +99,10 @@ Calculates McLaren PBW, NCHS predicted weight, GLI-based PFVC, actual-weight
 comparisons, normalized tidal volumes, respiratory mechanics, oxygenation,
 pediatric SOFA, survival variables, and ventilator-free-day outcomes.
 
-It produces the cross-sectional and retained-timepoint datasets, completes
-the six-step hospitalization-level attrition log, and writes distribution
-summaries using fixed shared bins.
+Links the chronic-condition indicators into analysis datasets, completes the
+six-step hospitalization-level attrition log, and writes distribution summaries
+using shared bins. Chronic-condition availability does not alter cohort
+eligibility.
 
 Selected tidal volumes are cleaned without substituting another source after
 an invalid selected value becomes missing. PIP-derived driving-pressure
@@ -82,82 +110,110 @@ fallbacks remain distinguished from plateau-derived static driving pressure.
 
 ### Script 04 — Analysis
 
-Produces cohort characteristics, mortality and respiratory-mechanic models,
-Fine–Gray liberation analyses with death as a competing event, survival
-analyses, demographic associations, PFVC-versus-weight comparisons, model
-diagnostics, figures, and unified effect-estimate tables.
+Produces Table 1, adjusted mortality and respiratory-mechanic models,
+Fine–Gray liberation analyses with death as a competing event, Cox survival
+models, demographic associations, PFVC-versus-weight comparisons, diagnostics,
+figures, and unified effect-estimate tables.
 
-Models retain their existing adjustment specifications and analysis-specific
-complete-case policies. A subdistribution hazard ratio is not a change in
-ventilator-free days, and an odds ratio is not a risk ratio.
+Primary and minimally adjusted models share the applicable chronic-condition
+adjustment while retaining their demographic-adjustment distinctions.
+Family-specific omissions are documented. Kaplan–Meier curves and other raw
+descriptive figures remain unadjusted.
+
+Exploratory interactions evaluate asthma, chronic respiratory
+disease/malformations, and mechanics-relevant neurologic disease separately
+against four tidal-volume exposures for mortality and liberation. The 24
+related interaction tests use unadjusted P values. Conditional slopes and
+interaction estimates do not establish treatment benefit or a preferred
+normalization method.
+
+Iteration-only paired adjustment fits and duplicate exports were removed
+after the final adjustment specification was selected.
 
 ### Script 05 — Normalization analysis
 
 Examines normalization discordance, demographic and age patterns, and movement
 between independently constructed, tie-preserving cohort-relative terciles.
 
-Exploratory prognostic analyses compare mechanic-only, PBW-locked, PFVC-locked,
-and separate mechanic-plus-size models across seven alternative adjustment
-terms. Additional analyses evaluate model-form comparisons, demographic
-modification, age/PFVC interaction ladders, balanced modifier models, and
-encompassing size models.
+Part 1 regression models include four chronic-condition terms. Adjusted
+prediction curves use the stated sex/race references with those conditions
+absent; condition-positive patients remain eligible for model fitting.
+Raw distributions, mathematical identities, and tercile assignments are
+unchanged.
 
-Common complete-case samples are retained within mechanic families.
-Model comparisons report AIC, apparent in-sample discrimination, event counts,
-and computational diagnostics.
+Part 2 mortality models compare mechanic-only, PBW-locked, PFVC-locked, and
+separate mechanic-plus-size specifications across seven alternative adjustment
+terms. Demographic modification, age/PFVC ladders, balanced modifier models,
+and encompassing size models retain the agreed chronic-condition adjustment.
+
+Common complete-case samples are used within comparison families. Existing
+computational suppression and curve-display criteria remain in place.
+Unstable mechanical-power demographic interaction tests were retained as
+suppressed results rather than interpreted estimates.
 
 ## Execution and dependencies
 
-Use a fresh session opened through the repository `.Rproj`. The README provides
-the full execution block: load `code/00_run_pipeline_v3.R`, run analysis, then
-render reports. Loading definitions starts neither workflow; an analysis error
-prevents reporting.
+Use R 4.6.1 and the recorded lockfile environment. The README provides setup,
+full-workflow, bounded-analysis, and reporting instructions using
+`code/00_run_pipeline_v3a.R`.
 
-Scripts run sequentially in separate R processes. The parent calls `gc()` after
-each successful return. The runner stops on failure, retains existing or partial
-outputs, and does not retry automatically.
+Sourcing the runner defines functions only. Analysis scripts run sequentially
+in separate R processes using the selected project library plus base R, with
+child profiles disabled. The parent calls `gc()` after each successful script
+return.
 
-Restore the recorded `renv.lock` environment before execution. On Windows,
-use a short checkout path to avoid package-header path problems. Restoration
-downloads and installs packages; the analysis runner does not.
+The runner stops at the first failure, retains partial outputs, and does not
+retry automatically. Analysis warnings remain visible and are retained in
+per-script CSVs. Hard crashes can interrupt logging.
 
-Analysis warnings are retained per script in a unique local directory and remain
-visible. Logging failure stops the child. Suppressed warnings and writes
-interrupted by hard crashes may not be retained.
+Normal setup restores dependencies separately from execution. On Windows,
+use a short checkout path. An optional development-library override selects
+an existing compatible library without installing or updating packages.
 
-Quarto and TeX render the PDFs from saved diagnostics without refitting models.
-Reports show the pre-render snapshot. Each run retains staged files, results,
-and backups. Publication and diagnostic synchronization are separate writes;
-inspect retained evidence before recovering from a failure.
+Quarto and TeX render diagnostic PDFs from saved diagnostics without refitting
+models. Nested R startup and library routing are controlled to prevent
+unintended project bootstrapping. The reporting process calls `gc()` between
+validated renders.
 
-## Outputs
+Reporting retains staged files, results, and backups. Final publication and
+diagnostic synchronization are multiple non-atomic writes. Reports describe
+the pre-render diagnostic snapshot.
+
+## Outputs and interpretation
 
 - `intermediate/`: working and analysis datasets.
-- `diagnostics/cohort`, `diagnostics/table1`, and `diagnostics/models`: saved
-  diagnostics; analysis-warning runs are under the model-diagnostic directory.
-- `final/tables`, `final/figures`, and `final/reports`: analysis artifacts and PDFs.
-- `final/optional_diagnostics`: reserved destination; no automatic RDS export.
+- `diagnostics/`: cohort, Table 1, model, and warning artifacts.
+- `final/tables`, `final/figures`, and `final/reports`: analysis deliverables.
+- `final/optional_diagnostics`: reserved destination.
 
-Script 05 validates 19 analysis files: 14 CSVs and five PDFs. Reporting validates
-a 20-file normalization report-inclusive manifest: 14 CSVs and six PDFs.
-These are not whole-pipeline inventories.
+Script 05 validates 19 analysis files: 14 CSVs and five PDFs. Separate reporting
+validates a 20-file normalization inventory: 14 CSVs and six PDFs. These are
+not whole-pipeline inventories.
 
-Some datasets, diagnostics, and report tables contain identifiers; figures may
-show individual points or small groups. Selected minimum-group filters are not
-blanket cell suppression. Keep site data, active configuration, generated
-outputs, and diagnostic RDS files out of GitHub.
+PBW/PFVC is a unit-bearing conversion factor. Terciles are cohort-relative
+categories, not clinical injury thresholds. AIC and apparent in-sample
+discrimination remain exploratory. Odds ratios are not risk ratios, and
+Fine–Gray subdistribution hazard ratios are not changes in ventilator-free days.
+
+Datasets, diagnostics, and report tables may contain identifiers; figures may
+show individual points or small groups. Keep site data, active configuration,
+generated outputs, and diagnostic RDS files out of GitHub.
 
 Cross-site pooling, control cohorts, and the adult study's longitudinal
 injury-stage workflows are not implemented.
 
-## Next steps
+## Remaining work
 
-The next generic test is another-site execution on Windows.
+Complete version 3a publication and the focused neurologic evidence review
+before buddy-site testing. Buddy-site testing remains deferred.
 
-Growth-method and interpolation comparisons will be implemented as a separate
-script after sites supply their data. This script is planned and is not part
-of the current pipeline. The current reference CSVs match the official CDC
-downloads; see [Growth references](reference-data/growth/README.md).
+Pooled exploratory analyses and the separate growth-method/interpolation
+comparison remain deferred until buddy-site testing is complete. Retained
+pooled candidates are described in
+[Deferred pooled analyses](reference-data/ccc_pooled_candidates.md).
+
+The growth-reference CSVs match the official CDC downloads; see
+[Growth references](reference-data/growth/README.md).
 
 Study dates, participating sites, sample size, waivers, and access, retention,
 and sharing policies are not specified here.

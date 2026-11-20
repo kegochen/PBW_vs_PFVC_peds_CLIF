@@ -548,6 +548,56 @@ if (length(review_items) == 0L) {
 }
 ```
 
+# Chronic-condition adjustment
+
+Part 1 regression models and Part 2 mortality models adjust for
+mechanics-relevant neurologic/neuromuscular disease, other neurologic disease,
+chronic respiratory disease/malformations, and asthma.
+
+These overlapping study-specific groups use diagnoses present on admission
+during the selected index hospitalization. They are scaffolded on pediatric
+Complex Chronic Conditions version 3, with asthma added separately.
+
+Other respiratory disease and respiratory technology evidence remain in the
+data but are omitted from these regression formulas following local
+mortality-estimation problems. All six indicators remain in the applicable
+model-completeness requirements. Missing information is not recoded as absence.
+
+```{r}
+ccc_policy <- normalization_qc$ccc_adjustment
+
+if (!is.list(ccc_policy)) {
+  stop("Saved Script 05 CCC adjustment policy is unavailable.")
+}
+
+show_table(tibble(
+  Item = c(
+    "Included regression terms",
+    "Omitted regression terms",
+    "Adjustment policy",
+    "Model-sample policy"
+  ),
+  Description = c(
+    paste(ccc_policy$included_mortality_terms, collapse = ", "),
+    paste(ccc_policy$omitted_mortality_terms, collapse = ", "),
+    ccc_policy$adjustment_policy,
+    ccc_policy$sample_policy
+  )
+))
+```
+
+## Adjusted prediction profiles
+
+Part 1 regression-based age and reclassification curves use the stated
+sex/race references with all four adjustment condition groups absent.
+Patients with conditions remain included in model fitting when their data are
+complete. These curves are reference-profile predictions, not averages over
+the cohort's condition mix.
+
+Raw distributions, mathematical identities, and descriptive tercile-change
+summaries remain unadjusted. Adding regression covariates does not redefine
+their calculations or the cohort-relative tercile boundaries.
+
 # Input data and analysis frames
 
 ```{=latex}
@@ -969,14 +1019,15 @@ show_table(descriptive_weight_qc$reclassification$mclaren_reconciliation)
 
 ## Sex-specific fitted age curves
 
-Each method uses the same three-degree-of-freedom spline model structure with
-age-by-sex and age-by-race interactions. Curves are shown separately by sex at
-the White race reference category. The exponentiated fitted log-ratio is not
+Each method uses the same three-degree-of-freedom age spline structure,
+age-by-sex and age-by-race interactions, and four CCC adjustment terms.
+Curves are shown separately by sex at the White race reference, with all four
+adjustment condition groups absent. The exponentiated fitted log-ratio is not
 the arithmetic mean weight/PFVC ratio.
 
-These are descriptive model-based relationships, not causal demographic effects
-or measurements of lung volume. The existing bottom panel of the Part 1b figure
-retains the original McLaren reclassification analysis.
+These are adjusted descriptive relationships, not causal demographic effects
+or measurements of lung volume. The bottom panel retains the McLaren
+reclassification assignments and uses CCC-adjusted reclassification-age models.
 
 ```{r}
 show_table(landscape_section = TRUE, 
@@ -1259,9 +1310,28 @@ show_table(landscape_section = TRUE,
 
 # Demographic effect modification
 
-A nonsignificant interaction test indicates that effect modification was not
-detected in this analysis. It does not prove demographic invariance or establish
-a universal normalization target.
+Reduced and expanded models retain the same CCC adjustment. A nonsignificant
+interaction test indicates that effect modification was not detected; it does
+not prove demographic invariance or establish a universal normalization target.
+
+Joint tests are suppressed when the saved models fail the computational-use
+criteria. Suppressed tests remain missing rather than being presented as
+interpretable results. Convergence and full rank alone do not establish
+reliable estimation.
+
+```{r}
+suppression_summary <- normalization_qc$prognostic_utility$
+  demographic_effect_modification$results %>%
+  group_by(family) %>%
+  summarise(
+    Comparisons = n(),
+    Suppressed = sum(!computationally_usable),
+    .groups = "drop"
+  ) %>%
+  rename(Family = family)
+
+show_table(suppression_summary)
+```
 
 ```{=latex}
 \BeginDiagnosticLandscape

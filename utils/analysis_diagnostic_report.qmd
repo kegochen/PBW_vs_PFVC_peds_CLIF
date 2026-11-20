@@ -624,6 +624,64 @@ show_table(table1_qc$continuous_variables$derived_variable_consistency)
 show_table(checks_to_table(table1_qc$checks))
 ```
 
+# Chronic-condition adjustment
+
+Condition groups use diagnoses present on admission during the selected index
+hospitalization. Groups may overlap. They are customized from the pediatric
+Complex Chronic Conditions version 3 framework, with asthma added separately;
+they are not an unchanged implementation of that classification.
+
+All six indicators are retained in the applicable regression completeness
+requirements. Missing information is not recoded as condition absence.
+Formula terms differ by model family because some locally rare groups could
+not be estimated reliably.
+
+```{r}
+ccc_configuration <- model_qc$adjustment_covariates$ccc_configuration
+
+if (!is.list(ccc_configuration)) {
+  stop("Saved final CCC adjustment configuration is unavailable.")
+}
+
+ccc_adjustment_report <- tibble(
+  Analysis = c(
+    "Mortality", "Successful liberation", "Cox survival",
+    "Demographic continuous outcomes", "Demographic mortality",
+    "PFVC versus weight methods"
+  ),
+  `Included condition terms` = c(
+    paste(ccc_configuration$mortality_terms, collapse = ", "),
+    paste(ccc_configuration$liberation_terms, collapse = ", "),
+    paste(ccc_configuration$cox_terms, collapse = ", "),
+    paste(ccc_configuration$demographic_continuous_terms, collapse = ", "),
+    paste(ccc_configuration$demographic_mortality_terms, collapse = ", "),
+    paste(ccc_configuration$prediction_formula_terms, collapse = ", ")
+  )
+)
+
+show_table(ccc_adjustment_report)
+```
+
+## Continuous-outcome adjustment exceptions
+
+```{r}
+show_table(
+  ccc_configuration$continuous_policy %>%
+    select(outcome_name, included_ccc_terms, omitted_ccc_terms, omission_reason)
+)
+```
+
+These are formula omissions, not patient exclusions. Deferred pooled-cohort
+analyses may revisit locally omitted terms after assessing compatibility,
+outcome events, and estimability.
+
+## Figure interpretation
+
+Model-derived comparisons and adjusted prediction curves use the fitted
+CCC-adjusted models. Kaplan–Meier curves, raw distributions, reclassification
+summaries, conditional-bias plots, and cohort-flow figures remain descriptive.
+Their presence in this report does not imply CCC adjustment.
+
 # Adjustment covariates and exposure specifications
 
 ```{=latex}
@@ -1444,6 +1502,100 @@ show_table(
   empty_text = "No duplicate unified-result keys were identified."
 )
 ```
+
+# Exploratory chronic-condition interactions
+
+Each model adds one interaction between a tidal-volume exposure and one
+condition group. Asthma, chronic respiratory disease/malformations, and
+mechanics-relevant neurologic disease are evaluated separately for mortality
+and successful liberation.
+
+Interaction estimates are ratios of odds ratios for mortality or ratios of
+subdistribution hazard ratios for liberation. A value of 1 is the interaction
+null. Conditional exposure slopes come from the same fitted model, not
+separate subgroup fits.
+
+The 24 related interaction tests are exploratory, with unadjusted P values.
+Small modifier-specific event counts limit precision. These analyses do not
+establish that increasing tidal volume improves outcomes.
+
+```{r}
+interaction_sections <- c(
+  asthma_interaction = "Asthma",
+  chronic_resp_interaction = "Chronic respiratory disease/malformations",
+  neuro_mechanics_interaction = "Mechanics-relevant neurologic disease"
+)
+
+interaction_report_data <- purrr::imap_dfr(
+  interaction_sections,
+  function(modifier_label, section_name) {
+    section <- model_qc$ccc_sensitivity[[section_name]]
+
+    if (!is.list(section)) {
+      stop("Saved interaction diagnostics are unavailable: ", section_name)
+    }
+
+    purrr::map_dfr(c("mortality", "liberation"), function(endpoint) {
+      results <- section[[endpoint]]$contrast_results
+
+      if (!is.data.frame(results)) {
+        stop("Saved interaction contrasts are unavailable: ", section_name, " / ", endpoint)
+      }
+
+      results %>%
+        mutate(
+          Modifier = .env$modifier_label,
+          Outcome = if (.env$endpoint == "mortality") "60-day mortality" else "28-day liberation",
+          .before = 1
+        )
+    })
+  }
+)
+
+interaction_report <- interaction_report_data %>%
+  filter(contrast == "interaction") %>%
+  transmute(
+    Modifier,
+    Outcome,
+    Exposure = exposure,
+    Measure = estimate_type,
+    Estimate = estimate,
+    `CI low` = conf_low,
+    `CI high` = conf_high,
+    `P value` = p_value,
+    N = n_obs
+  )
+
+show_table(interaction_report, digits = 3, landscape = TRUE)
+```
+
+## Conditional exposure slopes
+
+```{r}
+conditional_slope_report <- interaction_report_data %>%
+  filter(contrast != "interaction") %>%
+  transmute(
+    Modifier,
+    Outcome,
+    Exposure = exposure,
+    `Condition status` = if_else(
+      str_detect(contrast, "_present$"),
+      "Present",
+      "Absent"
+    ),
+    Measure = estimate_type,
+    Estimate = estimate,
+    `CI low` = conf_low,
+    `CI high` = conf_high,
+    N = n_obs
+  )
+
+show_table(conditional_slope_report, digits = 3, landscape = TRUE)
+```
+
+Triple-priority co-occurrence and proposed pairwise follow-ups were deferred
+for pooled exploratory evaluation. No local combination interaction was fitted.
+Deferred candidates are documented in `reference-data/ccc_pooled_candidates.md`.
 
 # Age functional-form and E-value sensitivity
 

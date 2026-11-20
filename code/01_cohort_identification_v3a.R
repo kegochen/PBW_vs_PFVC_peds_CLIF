@@ -140,8 +140,10 @@ if (supplemental_height_configured) {
 # Load CLIF tables
 # =============================================================================
 
-table_names <- c("patient", "hospitalization", "adt", "resp_support", "vitals", "labs", "medication",
-                 "patient_assessment", "patient_procedures")
+table_names <- c(
+  "patient", "hospitalization", "adt", "resp_support", "vitals", "labs", "medication",
+  "patient_assessment", "patient_procedures", "hospital_diagnosis"
+)
 
 supported_file_types <- c("parquet", "csv", "fst")
 
@@ -238,8 +240,25 @@ clif_meds <- clif_tables$medication
 clif_assessments <- clif_tables$patient_assessment
 
 clif_patient_procedures <- clif_tables$patient_procedures
+clif_hospital_diagnosis <- clif_tables$hospital_diagnosis
 
-rm(clif_tables, table_paths, missing_table_paths, supported_file_types)
+required_diagnosis_columns <- c(
+  "hospitalization_id", "diagnosis_code", "diagnosis_code_format", "poa_present"
+)
+
+missing_diagnosis_columns <- setdiff(required_diagnosis_columns, names(clif_hospital_diagnosis))
+
+if (length(missing_diagnosis_columns) > 0L) {
+  stop(
+    "clif_hospital_diagnosis is missing required column(s): ",
+    paste(missing_diagnosis_columns, collapse = ", ")
+  )
+}
+
+rm(
+  clif_tables, table_paths, missing_table_paths, supported_file_types,
+  required_diagnosis_columns, missing_diagnosis_columns
+)
 
 # =============================================================================
 # Normalize and reconcile case-variant identifiers
@@ -292,8 +311,11 @@ if (hospitalization_id_case_qc$n_ids_with_core_identity_conflict > 0) {
 clif_hospitalization <- clif_hospitalization %>%
   mutate(.source_row_order = row_number())
 
-tables_to_normalize <- c("clif_patient", "clif_hospitalization", "clif_adt", "clif_respiratory_support",
-                         "clif_vitals", "clif_labs", "clif_meds", "clif_assessments", "clif_patient_procedures")
+tables_to_normalize <- c(
+  "clif_patient", "clif_hospitalization", "clif_adt", "clif_respiratory_support",
+  "clif_vitals", "clif_labs", "clif_meds", "clif_assessments", "clif_patient_procedures",
+  "clif_hospital_diagnosis"
+)
 
 for (object_name in tables_to_normalize) {
   current_table <- get(object_name, inherits = FALSE) %>%
@@ -1115,6 +1137,53 @@ if (anyDuplicated(eligible_patients) || anyDuplicated(eligible_hospitalizations)
   stop("The selected cohort does not contain exactly one unique hospitalization per patient.")
 }
 
+# =============================================================================
+# Prepare present-on-admission diagnoses from the selected index hospitalization
+# =============================================================================
+# Retain all diagnosis positions. Only poa_present == 1 contributes to classification.
+# Keep source codes and code-system labels unchanged until classification is defined.
+# Absence of retained rows is not yet interpreted as absence of CCC.
+
+cohort_diagnosis_source <- clif_hospital_diagnosis %>%
+  filter(hospitalization_id %in% eligible_hospitalizations)
+
+cohort_poa_diagnoses <- cohort_diagnosis_source %>%
+  filter(poa_present == 1) %>%
+  select(hospitalization_id, diagnosis_code, diagnosis_code_format)
+
+cohort_poa_icd10cm_diagnoses <- cohort_poa_diagnoses %>%
+  filter(diagnosis_code_format == "ICD10CM")
+
+cohort_poa_missing_format_diagnoses <- cohort_poa_diagnoses %>%
+  filter(is.na(diagnosis_code_format))
+
+# =============================================================================
+# Classify custom respiratory-mechanics diagnosis groups
+# =============================================================================
+# Pass all index-hospitalization diagnosis rows so the helper can retain coding gaps.
+# Classification does not change cohort eligibility or export diagnosis-level rows.
+
+ccc_mapping_path <- file.path(config$utils_dir, "resp_mechanics_ccc_mapping.R")
+ccc_classifier_path <- file.path(config$utils_dir, "classify_resp_mechanics_ccc.R")
+
+for (utility_path in c(ccc_mapping_path, ccc_classifier_path)) {
+  if (!file.exists(utility_path) || dir.exists(utility_path)) {
+    stop("Respiratory-mechanics classification utility not found: ", utility_path)
+  }
+}
+
+source(ccc_mapping_path)
+source(ccc_classifier_path)
+
+resp_mechanics_ccc_result <- classify_resp_mechanics_ccc(
+  hospitalization_ids = eligible_hospitalizations,
+  diagnosis_rows = cohort_diagnosis_source,
+  mapping = resp_mechanics_ccc_mapping()
+)
+
+cohort_resp_mechanics_ccc <- resp_mechanics_ccc_result$data
+
+rm(ccc_mapping_path, ccc_classifier_path, utility_path)
 
 # -----------------------------------------------------------------------------
 # Restrict post-intubation tidal-volume rows to the selected cohort
@@ -1318,6 +1387,12 @@ linkage_summary <- tibble(
 
 cohort_diagnostics <- list(
   hospitalization_level = cohort_diagnostic,
+  resp_mechanics_ccc = list(
+    provenance = resp_mechanics_ccc_result$provenance,
+    source_summary = resp_mechanics_ccc_result$diagnostics$source_summary,
+    distribution = resp_mechanics_ccc_result$diagnostics$distribution,
+    hospitalization_availability = resp_mechanics_ccc_result$availability
+  ),
   patient_procedure_load_qc = patient_procedure_load_qc,
   intubation_identification = list(
     configuration = list(
@@ -2345,6 +2420,7 @@ if (anyDuplicated(post_intubation_tidal_volume_output$.resp_source_row_id)) {
 saveRDS(eligible_hospitalizations, file.path(output_dir, "cohort_hospitalization_ids.rds"))
 write_parquet(resp_waterfall, file.path(output_dir, "resp_support_waterfall.parquet"))
 write_parquet(cohort_demographics, file.path(output_dir, "cohort_demographics.parquet"))
+write_parquet(cohort_resp_mechanics_ccc, file.path(output_dir, "cohort_resp_mechanics_ccc.parquet"))
 write_parquet(cohort_vitals, file.path(output_dir, "cohort_vitals.parquet"))
 write_parquet(cohort_labs, file.path(output_dir, "cohort_labs.parquet"))
 write_parquet(cohort_meds, file.path(output_dir, "cohort_meds.parquet"))
@@ -2398,11 +2474,14 @@ stopifnot(
 )
 
 
-required_output_files <- c("cohort_hospitalization_ids.rds", "resp_support_waterfall.parquet",
-                           "cohort_demographics.parquet", "cohort_vitals.parquet", "cohort_labs.parquet",
-                           "cohort_meds.parquet", "cohort_assessments.parquet", "cohort_heights.parquet",
-                           "cohort_weights.parquet", "attrition_log_partial.csv", "intubation_events.parquet",
-                           "post_intubation_tidal_volume_rows.parquet")
+required_output_files <- c(
+  "cohort_hospitalization_ids.rds", "resp_support_waterfall.parquet",
+  "cohort_demographics.parquet", "cohort_resp_mechanics_ccc.parquet",
+  "cohort_vitals.parquet", "cohort_labs.parquet", "cohort_meds.parquet",
+  "cohort_assessments.parquet", "cohort_heights.parquet", "cohort_weights.parquet",
+  "attrition_log_partial.csv", "intubation_events.parquet",
+  "post_intubation_tidal_volume_rows.parquet"
+)
 
 missing_output_files <- required_output_files[
   !file.exists(file.path(output_dir, required_output_files))

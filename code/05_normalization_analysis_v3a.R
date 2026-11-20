@@ -166,6 +166,45 @@ cross_sectional <- read_parquet(cross_sectional_path)
 
 stopifnot(nrow(cross_sectional) > 0L)
 
+# Script 03 carries diagnosis-derived CCC indicators into the analysis dataset.
+# Preserve all six indicators; mortality adjustment omits the two terms that
+# were not estimable in the development-site mortality sensitivity.
+
+ccc_vars <- c(
+  "ccc_neuro_mechanics", "ccc_neuro_other", "ccc_resp_chronic_malformation",
+  "ccc_resp_other", "ccc_asthma", "ccc_resp_technology"
+)
+
+ccc_mortality_vars <- c(
+  "ccc_neuro_mechanics", "ccc_neuro_other",
+  "ccc_resp_chronic_malformation", "ccc_asthma"
+)
+
+missing_ccc_columns <- setdiff(ccc_vars, names(cross_sectional))
+
+if (length(missing_ccc_columns) > 0L) {
+  stop(
+    "Script 05 is missing CCC columns: ",
+    paste(missing_ccc_columns, collapse = ", "),
+    ". Regenerate analysis inputs with Script 03."
+  )
+}
+
+ccc_values_valid <- vapply(
+  cross_sectional[ccc_vars],
+  function(x) is.numeric(x) && all(is.na(x) | x %in% c(0L, 1L)),
+  logical(1)
+)
+
+if (!all(ccc_values_valid)) {
+  stop(
+    "CCC indicators must be numeric 0, 1, or NA: ",
+    paste(ccc_vars[!ccc_values_valid], collapse = ", ")
+  )
+}
+
+rm(missing_ccc_columns, ccc_values_valid)
+
 cohort_diagnostics_path <- file.path(
   config$cohort_diagnostic_dir,
   "cohort_diagnostics.rds"
@@ -1010,7 +1049,9 @@ discordance_identity_qc <- bind_rows(
   mutate(passed = n_compared > 0L & maximum_absolute_difference <= 1e-10)
 
 # Use an explicit complete-case sample even though these fields are expected to be complete in the Script 03 cohort.
-disc_model_vars <- c("pbwpfvc", "age", "sex_category", "race_category")
+disc_model_vars <- c(
+  "pbwpfvc", "age", "sex_category", "race_category", ccc_vars
+)
 
 disc_model_data <- base %>%
   select(.source_row, hospitalization_id, all_of(disc_model_vars)) %>%
@@ -1022,8 +1063,14 @@ stopifnot(
   n_distinct(disc_model_data$age) >= 2L
 )
 
+# Preserve the six-indicator completeness policy; adjust for the four retained terms.
+disc_model_formula <- as.formula(paste(
+  "log(pbwpfvc) ~ age + sex_category + race_category +",
+  paste(ccc_mortality_vars, collapse = " + ")
+))
+
 disc_model <- lm(
-  log(pbwpfvc) ~ age + sex_category + race_category,
+  disc_model_formula,
   data = disc_model_data, x = TRUE, y = TRUE, model = TRUE
 )
 
@@ -1896,8 +1943,13 @@ discordance_heterogeneity_output_path <- file.path(
 )
 
 disc_age_model_data <- base %>%
-  select(.source_row, hospitalization_id, pbwpfvc, age, sex_category, race_category) %>%
-  drop_na(pbwpfvc, age, sex_category, race_category)
+  select(
+    .source_row, hospitalization_id, pbwpfvc, age, sex_category, race_category,
+    all_of(ccc_vars)
+  ) %>%
+  drop_na(pbwpfvc, age, sex_category, race_category, all_of(ccc_vars))
+
+part1_ccc_covariates <- paste(ccc_mortality_vars, collapse = " + ")
 
 stopifnot(
   nrow(disc_age_model_data) > 0L,
@@ -1907,8 +1959,14 @@ stopifnot(
 )
 
 # Compare a linear age function with a three-degree-of-freedom natural spline on the same observations.
-m_disc_lin <- lm(log(pbwpfvc) ~ age, data = disc_age_model_data, x = TRUE, y = TRUE, model = TRUE)
-m_disc_spl <- lm(log(pbwpfvc) ~ ns(age, df = 3), data = disc_age_model_data, x = TRUE, y = TRUE, model = TRUE)
+m_disc_lin <- lm(
+  as.formula(paste("log(pbwpfvc) ~ age +", part1_ccc_covariates)),
+  data = disc_age_model_data, x = TRUE, y = TRUE, model = TRUE
+)
+m_disc_spl <- lm(
+  as.formula(paste("log(pbwpfvc) ~ ns(age, df = 3) +", part1_ccc_covariates)),
+  data = disc_age_model_data, x = TRUE, y = TRUE, model = TRUE
+)
 
 disc_spl_comparison <- anova(m_disc_lin, m_disc_spl)
 disc_nonlinearity_p <- disc_spl_comparison$`Pr(>F)`[2]
@@ -1955,12 +2013,18 @@ disc_age_model_qc <- bind_rows(
 
 # Test whether the continuous-age association differs jointly by sex or race.
 m_het0 <- lm(
-  log(pbwpfvc) ~ age + sex_category + race_category,
+  as.formula(paste(
+    "log(pbwpfvc) ~ age + sex_category + race_category +",
+    part1_ccc_covariates
+  )),
   data = disc_age_model_data, x = TRUE, y = TRUE, model = TRUE
 )
 
 m_het <- lm(
-  log(pbwpfvc) ~ age * sex_category + age * race_category,
+  as.formula(paste(
+    "log(pbwpfvc) ~ age * sex_category + age * race_category +",
+    part1_ccc_covariates
+  )),
   data = disc_age_model_data, x = TRUE, y = TRUE, model = TRUE
 )
 
@@ -1971,12 +2035,18 @@ linear_joint_heterogeneity_p <- het_comparison$`Pr(>F)`[2]
 # This analysis does not assume that nonlinearity was established in the current sample.
 # Spline-basis interaction coefficients are not individually interpretable.
 m_het_spline0 <- lm(
-  log(pbwpfvc) ~ ns(age, df = 3) + sex_category + race_category,
+  as.formula(paste(
+    "log(pbwpfvc) ~ ns(age, df = 3) + sex_category + race_category +",
+    part1_ccc_covariates
+  )),
   data = disc_age_model_data, x = TRUE, y = TRUE, model = TRUE
 )
 
 m_het_spline <- lm(
-  log(pbwpfvc) ~ ns(age, df = 3) * sex_category + ns(age, df = 3) * race_category,
+  as.formula(paste(
+    "log(pbwpfvc) ~ ns(age, df = 3) * sex_category + ns(age, df = 3) * race_category +",
+    part1_ccc_covariates
+  )),
   data = disc_age_model_data, x = TRUE, y = TRUE, model = TRUE
 )
 
@@ -2130,11 +2200,22 @@ reclassification_age_output_path <- file.path(
 )
 
 reclassification_age_data <- purrr::imap(reclassification_results, function(result, result_name) {
-  result$analysis_data %>%
-    transmute(
-      .source_row, hospitalization_id, reclassified = as.integer(reclassified),
-      age, sex_category, race_category
-    )
+  source_data <- result$analysis_data
+  source_index <- match(source_data$hospitalization_id, cross_sectional$hospitalization_id)
+  
+  if (anyNA(source_index)) {
+    stop("Reclassification rows did not fully link to CCC indicators for ", result_name)
+  }
+  
+  bind_cols(
+    source_data %>%
+      transmute(
+        .source_row, hospitalization_id, reclassified = as.integer(reclassified),
+        age, sex_category, race_category
+      ),
+    cross_sectional[source_index, ccc_vars, drop = FALSE]
+  ) %>%
+    drop_na(all_of(ccc_vars))
 })
 
 reclassification_age_labels <- c(
@@ -2143,9 +2224,15 @@ reclassification_age_labels <- c(
 )
 
 recl_age_fit <- purrr::map(reclassification_age_data, function(analysis_data) {
+  model_formula <- as.formula(paste(
+    "reclassified ~ age + sex_category + race_category +",
+    part1_ccc_covariates
+  ))
+  
   glm(
-    reclassified ~ age + sex_category + race_category,
-    data = analysis_data, family = binomial, x = TRUE, y = TRUE, model = TRUE
+    model_formula,
+    data = analysis_data, family = binomial,
+    x = TRUE, y = TRUE, model = TRUE, na.action = na.fail
   )
 })
 
@@ -2241,20 +2328,34 @@ reclassification_age_cell_qc <- purrr::imap_dfr(
 reclassification_age_sample_qc <- purrr::imap_dfr(
   reclassification_age_data,
   function(analysis_data, model_name) {
-    expected_result <- reclassification_results[[model_name]]
+    descriptive_source <- reclassification_results[[model_name]]$analysis_data
+    expected_source <- descriptive_source[
+      descriptive_source$.source_row %in% analysis_data$.source_row,
+      ,
+      drop = FALSE
+    ]
+    fitted_model <- recl_age_fit[[model_name]]
     
     tibble(
       metric_id = model_name,
       metric = unname(reclassification_age_labels[[model_name]]),
-      n_reclassification_source = nrow(expected_result$analysis_data),
+      n_reclassification_source = nrow(descriptive_source),
       n_age_model_source = nrow(analysis_data),
-      n_model = nobs(recl_age_fit[[model_name]]),
+      n_excluded_missing_ccc = nrow(descriptive_source) - nrow(analysis_data),
+      n_model = nobs(fitted_model),
       source_rows_match = identical(
         analysis_data$.source_row,
-        expected_result$analysis_data$.source_row
+        expected_source$.source_row
       ),
-      reclassification_count_source = sum(expected_result$analysis_data$reclassified),
-      reclassification_count_model = sum(model.response(model.frame(recl_age_fit[[model_name]])) == 1L)
+      model_rows_match = identical(
+        rownames(model.frame(fitted_model)),
+        rownames(analysis_data)
+      ),
+      reclassification_count_descriptive = sum(descriptive_source$reclassified),
+      reclassification_count_source = sum(expected_source$reclassified),
+      reclassification_count_model = sum(
+        model.response(model.frame(fitted_model)) == 1L
+      )
     )
   }
 )
@@ -2265,9 +2366,12 @@ reclassification_age_checks <- list(
   reclassification_age_models_have_events = all(recl_age_model_qc$n_reclassified > 0L),
   reclassification_age_models_have_nonevents = all(recl_age_model_qc$n_not_reclassified > 0L),
   reclassification_age_models_use_expected_n = all(
-    reclassification_age_sample_qc$n_model == reclassification_age_sample_qc$n_reclassification_source
+    reclassification_age_sample_qc$n_model == reclassification_age_sample_qc$n_age_model_source
   ),
-  reclassification_age_source_rows_match = all(reclassification_age_sample_qc$source_rows_match),
+  reclassification_age_source_rows_match = all(
+    reclassification_age_sample_qc$source_rows_match &
+      reclassification_age_sample_qc$model_rows_match
+  ),
   reclassification_age_event_counts_match = all(
     reclassification_age_sample_qc$reclassification_count_source ==
       reclassification_age_sample_qc$reclassification_count_model
@@ -2387,8 +2491,15 @@ if (any(!reclassification_age_warnings$curve_usable)) {
 
 normalization_analysis_diagnostics$reclassification$age_association <- list(
   interpretation = paste0(
-    "Odds ratios describe the adjusted logit-linear association between continuous age and changing cohort-relative ",
-    "tercile when switching normalization. These are descriptive, not causal, associations."
+    "Odds ratios describe the association between continuous age and changing cohort-relative tercile, ",
+    "adjusted for sex, race, and the four retained CCC terms. These are descriptive, not causal, associations."
+  ),
+  ccc_adjustment_terms = ccc_mortality_vars,
+  prediction_profile = list(
+    sex_category = "Male",
+    race_category = "WHITE",
+    ccc_values = setNames(rep(0L, length(ccc_mortality_vars)), ccc_mortality_vars),
+    interpretation = "Condition-absent reference predictions; fitting includes all CCC-complete condition profiles"
   ),
   curve_display_criteria = list(
     minimum_events_per_fitted_parameter = MIN_RECLASSIFICATION_EVENTS_PER_PARAMETER,
@@ -2435,15 +2546,23 @@ part1b_figure_path <- file.path(figure_dir, paste0("norm_discordance_part1b_", s
 descriptive_age_model_data <- purrr::map(
   descriptive_method_data,
   ~ .x %>%
-    select(.source_row, hospitalization_id, age, sex_category, race_category, .method_ratio) %>%
-    drop_na(age, sex_category, race_category, .method_ratio)
+    select(
+      .source_row, hospitalization_id, age, sex_category, race_category,
+      .method_ratio, all_of(ccc_vars)
+    ) %>%
+    drop_na(age, sex_category, race_category, .method_ratio, all_of(ccc_vars))
 )
 
 descriptive_age_models <- purrr::map(descriptive_age_model_data, function(data) {
   stopifnot(nrow(data) > 0L, n_distinct(data$age) >= 4L)
   
+  model_formula <- as.formula(paste(
+    "log(.method_ratio) ~ ns(age, df = 3) * sex_category + ns(age, df = 3) * race_category +",
+    part1_ccc_covariates
+  ))
+  
   lm(
-    log(.method_ratio) ~ ns(age, df = 3) * sex_category + ns(age, df = 3) * race_category,
+    model_formula,
     data = data, x = TRUE, y = TRUE, model = TRUE
   )
 })
@@ -2456,7 +2575,9 @@ descriptive_age_model_qc <- purrr::imap_dfr(descriptive_age_models, function(mod
     weight_method = method_id,
     n_method_available = nrow(descriptive_method_data[[method_id]]),
     n_analyzed = nobs(model),
+    # Retain the existing column name for compatibility; exclusions now include CCC missingness.
     n_excluded_demographics = n_method_available - n_analyzed,
+    exclusion_scope = "Missing demographics, method ratio, or any of the six CCC indicators",
     formula = paste(deparse(formula(model)), collapse = " "),
     full_rank = qr(model_matrix)$rank == ncol(model_matrix),
     coefficients_finite = all(is.finite(coef(model))),
@@ -2493,6 +2614,10 @@ discordance_age_curve <- purrr::imap_dfr(descriptive_age_models, function(model,
     sex_category = factor(expected_sex_levels, levels = expected_sex_levels)
   ) %>%
     mutate(race_category = factor("WHITE", levels = expected_race_levels))
+  
+  for (variable in ccc_mortality_vars) {
+    prediction_grid[[variable]] <- 0L
+  }
   
   prediction <- predict(model, newdata = prediction_grid, se.fit = TRUE)
   
@@ -2571,8 +2696,9 @@ p_het <- ggplot(
     title = "Weight/PFVC age patterns by method and sex",
     subtitle = str_wrap(
       paste0(
-        "Fitted spline curves at the White race reference category. ",
-        "Each method uses its available demographic-complete sample."
+        "CCC-adjusted spline curves at the White race reference, with all four ",
+        "adjustment condition groups absent. Each method uses its available ",
+        "demographic- and CCC-complete sample."
       ),
       width = 95
     ),
@@ -2622,6 +2748,10 @@ reclassification_curve_data <- purrr::imap_dfr(recl_age_fit, function(fitted_mod
     sex_category = factor("Male", levels = expected_sex_levels),
     race_category = factor("WHITE", levels = expected_race_levels)
   )
+  
+  for (variable in ccc_mortality_vars) {
+    age_grid[[variable]] <- 0L
+  }
   
   model_usable <- isTRUE(status$converged[[1]]) &&
     !isTRUE(status$boundary[[1]]) &&
@@ -2721,7 +2851,9 @@ p_recl_age <- ggplot(reclassification_curve_data, aes(x = age, y = probability))
     y = "Predicted probability of changing tercile",
     caption = str_wrap(
       paste0(
-        "Models adjust for sex and race. The plotted age function is logit-linear. ",
+        "Models adjust for sex, race, and four condition groups. Predictions use the male and White references, ",
+        "with mechanics-relevant neurologic disease, other neurologic disease, chronic respiratory disease/malformations, ",
+        "and asthma absent. The plotted age function is logit-linear. ",
         "Terciles are cohort-relative and are not validated clinical injury thresholds."
       ),
       width = 105
@@ -2812,7 +2944,17 @@ normalization_analysis_diagnostics$discordance$age_pattern$prediction_curve <-
   )
 
 normalization_analysis_diagnostics$descriptive_weight_comparison$age_pattern <- list(
-  formula = "log(method weight / PFVC) ~ ns(age, df = 3) * sex + ns(age, df = 3) * race",
+  formula = paste(
+    "log(method weight / PFVC) ~ ns(age, df = 3) * sex_category +",
+    "ns(age, df = 3) * race_category +", part1_ccc_covariates
+  ),
+  ccc_adjustment_terms = ccc_mortality_vars,
+  prediction_profile = list(
+    race_category = "WHITE",
+    sex_category = expected_sex_levels,
+    ccc_values = setNames(rep(0L, length(ccc_mortality_vars)), ccc_mortality_vars),
+    interpretation = "Condition-absent reference predictions; fitting includes all CCC-complete condition profiles"
+  ),
   reference_race = "WHITE",
   model_diagnostics = descriptive_age_model_qc,
   coefficients = purrr::imap_dfr(descriptive_age_models, function(model, method_id) {
@@ -2827,9 +2969,10 @@ normalization_analysis_diagnostics$descriptive_weight_comparison$age_pattern <- 
   method_colors = descriptive_method_colors,
   figure = part1b_figure_qc,
   interpretation = paste0(
-    "Sex facets show three method-specific descriptive spline curves conditional on White race. ",
-    "Method samples may differ; the original McLaren predictions are checked for preservation. ",
-    "The bottom reclassification panel retains its original McLaren analysis."
+    "Sex facets show three method-specific CCC-adjusted spline curves at the White race reference, ",
+    "with all four adjustment condition groups absent. Method-specific complete-case samples may differ. ",
+    "McLaren predictions are reconciled with the CCC-adjusted McLaren heterogeneity model. ",
+    "The bottom panel uses the existing McLaren reclassification assignments with CCC-adjusted age models."
   ),
   checks = c(descriptive_age_fit_checks, descriptive_age_prediction_checks)
 )
@@ -2855,10 +2998,13 @@ save_normalization_diagnostics(normalization_analysis_diagnostics)
 # PART 2 -- Prognostic utility of normalization for 60-day mortality
 # =============================================================================
 
-# Each candidate model retains one alternative normalization/size term, illness severity, oxygenation, and BMI.
-# Primary-adjusted models additionally include age, sex, and race. These are statistical adjustment specifications,
-# not claims that the covariates form a sufficient causal adjustment set.
-common_base_cov <- "sofa_total + sf10 + bmi"
+# Each mortality model retains one alternative normalization/size term, illness
+# severity, oxygenation, BMI, and the four retained mortality CCC terms.
+# Primary-adjusted models additionally include age, sex, and race.
+# CCC terms are shared across adjustment levels so nested comparisons retain
+# identical condition adjustment. These are statistical, not sufficient causal, sets.
+ccc_mortality_cov <- paste(ccc_mortality_vars, collapse = " + ")
+common_base_cov <- paste("sofa_total + sf10 + bmi +", ccc_mortality_cov)
 demo_cov <- "age + sex_category + race_category"
 
 # Retain the McLaren reference adjustment string for compatibility and preservation checks.
@@ -2934,6 +3080,26 @@ stopifnot(isTRUE(all(unlist(normalization_covariate_checks, use.names = FALSE)))
 
 normalization_analysis_diagnostics$normalization_specifications$covariate_grid <- normalization_covariate_grid
 
+normalization_analysis_diagnostics$ccc_adjustment <- list(
+  indicator_columns = ccc_vars,
+  included_mortality_terms = ccc_mortality_vars,
+  omitted_mortality_terms = setdiff(ccc_vars, ccc_mortality_vars),
+  omission_reason = paste0(
+    "Other respiratory disease and respiratory technology were omitted from ",
+    "the development-site mortality models because of sparse-event non-estimability."
+  ),
+  adjustment_policy = paste0(
+    "The four retained CCC terms supplement both existing mortality adjustment levels. ",
+    "The levels continue to differ by demographic adjustment."
+  ),
+  sample_policy = paste0(
+    "All six indicators remain in the common complete-case requirements. ",
+    "Missing indicators are not recoded as absence. Descriptive cohorts are unchanged."
+  ),
+  classification_provenance = cohort_diagnostics$resp_mechanics_ccc$provenance,
+  pooled_candidates = setdiff(ccc_vars, ccc_mortality_vars)
+)
+
 normalization_analysis_diagnostics$checks <- c(
   normalization_analysis_diagnostics$checks,
   normalization_covariate_checks
@@ -2965,7 +3131,8 @@ family_metric_vars <- list(
 
 prognostic_common_vars <- unique(c(
   "mortality_event_60", normalization_adjustment_vars,
-  "sofa_total", "sf10", "bmi", "age", "sex_category", "race_category", "pbw", "pfvc"
+  "sofa_total", "sf10", "bmi", "age", "sex_category", "race_category", "pbw", "pfvc",
+  ccc_vars
 ))
 
 prognostic_analysis_data <- purrr::imap(family_data, function(data, family_name) {
@@ -3075,7 +3242,8 @@ stopifnot(isTRUE(all(unlist(prognostic_sample_policy_checks, use.names = FALSE))
 normalization_analysis_diagnostics$prognostic_sample_configuration <- list(
   policy = paste0(
     "One common complete-case sample per mechanic family across all seven alternative normalization/size variables, ",
-    "all candidate mechanic specifications, and both adjustment levels. Exclusions affect these outcome models only; ",
+    "all candidate mechanic specifications, both adjustment levels, and all six CCC indicators. ",
+    "Four retained CCC terms enter the mortality formulas. Exclusions affect these outcome models only; ",
     "they do not change the upstream cohort or descriptive discordance/reclassification samples."
   ),
   required_common_variables = prognostic_common_vars,
@@ -3660,8 +3828,9 @@ normalization_analysis_diagnostics$prognostic_utility <- list(
   normalization_specifications = normalization_adjustment_specs,
   normalization_covariate_grid = normalization_covariate_grid,
   adjustment_specs_note = paste0(
-    "adjustment_specs retains the original McLaren reference strings. ",
-    "normalization_covariate_grid records the actual adjustment strings used for all seven alternatives."
+    "adjustment_specs records the McLaren reference specifications with the four retained CCC terms. ",
+    "normalization_covariate_grid records the actual covariates for all seven alternatives. ",
+    "CCC adjustment is shared across both levels; primary adjustment additionally includes age, sex, and race."
   ),
   common_sample_configuration = normalization_analysis_diagnostics$prognostic_sample_configuration,
   candidate_specifications = prog_specs,
@@ -5074,7 +5243,8 @@ data_map <- list(
 ladder_common_vars <- unique(c(
   ".source_row", "hospitalization_id", "mortality_event_60", "pfvc",
   normalization_adjustment_vars,
-  "sofa_total", "sf10", "bmi", "age", "sex_category", "race_category"
+  "sofa_total", "sf10", "bmi", "age", "sex_category", "race_category",
+  ccc_vars
 ))
 
 prepare_ladder_data <- function(family, mx, data_name) {
@@ -5298,12 +5468,14 @@ normalization_analysis_diagnostics$mechanic_modification <- list(
   normalization_specifications = normalization_adjustment_specs,
   normalization_covariate_grid = ladder_covariate_grid,
   adjustment_specs_note = paste0(
-    "adjustment_specs retains the original McLaren reference strings. ",
-    "normalization_covariate_grid records the adjustment strings for the expanded ladder fits."
+    "adjustment_specs records the CCC-adjusted McLaren reference strings. ",
+    "normalization_covariate_grid records the actual ladder covariates for all seven alternatives. ",
+    "Both levels include the four retained CCC terms; the demographic level additionally includes sex and race."
   ),
   common_sample_policy = paste0(
-    "One common complete-case sample per mechanic family across all seven alternatives and both ladder adjustment ",
-    "levels. All ladder rungs share this sample and its centering constants. ",
+    "One common complete-case sample per mechanic family across all seven alternatives, both ladder adjustment ",
+    "levels, and all six CCC indicators. Four retained CCC terms enter every ladder formula. ",
+    "All rungs share this sample and its centering constants. ",
     "These exclusions do not change the upstream cohort or descriptive discordance/reclassification analyses."
   ),
   required_common_variables = ladder_common_vars,
@@ -6822,7 +6994,8 @@ encompassing_pdf_path <- file.path(figure_dir, paste0("norm_encompassing_", site
 encompassing_common_vars <- unique(c(
   ".source_row", "hospitalization_id", "mortality_event_60", "pbw", "pfvc",
   normalization_adjustment_vars,
-  "sofa_total", "sf10", "bmi", "age", "sex_category", "race_category"
+  "sofa_total", "sf10", "bmi", "age", "sex_category", "race_category",
+  ccc_vars
 ))
 
 prepare_encompassing_data <- function(family_name, mechanic_variable, data_name) {
@@ -6985,7 +7158,8 @@ stopifnot(isTRUE(all(unlist(encompassing_sample_checks, use.names = FALSE))))
 normalization_analysis_diagnostics$encompassing_sample_configuration <- list(
   policy = paste0(
     "One common complete-case sample per mechanic family across all seven alternative adjustment variables, ",
-    "both adjustment levels, and all encompassing model forms. ",
+    "both adjustment levels, all encompassing model forms, and all six CCC indicators. ",
+    "Four retained CCC terms enter every encompassing formula. ",
     "Existing positive/finite mechanic, PBW, and PFVC requirements are preserved. ",
     "Exclusions affect these outcome models only, not the upstream or descriptive cohorts."
   ),

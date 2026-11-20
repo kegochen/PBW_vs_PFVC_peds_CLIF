@@ -59,6 +59,42 @@ render_diagnostic_reports <- function(config) {
     stop("The project quarto R package is required. No installation was attempted.")
   }
   
+  # Quarto starts another R process. Preserve the caller's selected libraries
+  # and disable nested startup profiles that could bootstrap the development project.
+  reporting_env_names <- c(
+    "R_PROFILE", "R_PROFILE_USER", "R_ENVIRON", "R_ENVIRON_USER",
+    "R_LIBS", "R_LIBS_USER", "R_LIBS_SITE"
+  )
+  reporting_env_before <- Sys.getenv(reporting_env_names, unset = NA_character_)
+  reporting_library_paths <- .libPaths()
+  
+  on.exit({
+    for (name in reporting_env_names) {
+      value <- reporting_env_before[[name]]
+      
+      if (is.na(value)) {
+        Sys.unsetenv(name)
+      } else {
+        do.call(Sys.setenv, setNames(list(value), name))
+      }
+    }
+  }, add = TRUE)
+  
+  reporting_library_string <- paste(
+    reporting_library_paths,
+    collapse = .Platform$path.sep
+  )
+  
+  Sys.setenv(
+    R_PROFILE = "NULL",
+    R_PROFILE_USER = "NULL",
+    R_ENVIRON = "NULL",
+    R_ENVIRON_USER = "NULL",
+    R_LIBS = reporting_library_string,
+    R_LIBS_USER = reporting_library_string,
+    R_LIBS_SITE = ""
+  )
+  
   quarto_executable <- quarto::quarto_path()
   
   if (is.null(quarto_executable) || !file.exists(quarto_executable)) {
@@ -499,6 +535,7 @@ render_diagnostic_reports <- function(config) {
     reporting_operation <- paste("Validate staged PDF:", staged_paths[[name]])
     validate_pdf(staged_paths[[name]])
     message("Reporting | staged PDF validated: ", name)
+    invisible(gc())
   }
   
   # Reject unavailable checksums or changes to saved inputs and QMD sources.

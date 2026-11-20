@@ -265,6 +265,55 @@ cohort_weights <- read_parquet(file.path(output_dir, "cohort_weights.parquet"))
 cohort_meds <- read_parquet(file.path(output_dir, "cohort_meds.parquet"))
 cohort_assessments <- read_parquet(file.path(output_dir, "cohort_assessments.parquet"))
 
+# Load the diagnosis-derived hospitalization-level CCC indicators from Script 01.
+# Missing indicator values remain missing; CCC does not determine cohort eligibility.
+ccc_vars <- c(
+  "ccc_neuro_mechanics", "ccc_neuro_other", "ccc_resp_chronic_malformation",
+  "ccc_resp_other", "ccc_asthma", "ccc_resp_technology"
+)
+
+ccc_input_path <- file.path(output_dir, "cohort_resp_mechanics_ccc.parquet")
+
+if (!file.exists(ccc_input_path) || dir.exists(ccc_input_path)) {
+  stop("CCC intermediate file not found: ", ccc_input_path, ". Complete Script 01 first.")
+}
+
+cohort_resp_mechanics_ccc <- read_parquet(ccc_input_path)
+missing_ccc_columns <- setdiff(
+  c("hospitalization_id", ccc_vars),
+  names(cohort_resp_mechanics_ccc)
+)
+
+if (length(missing_ccc_columns) > 0L) {
+  stop("CCC intermediate is missing: ", paste(missing_ccc_columns, collapse = ", "))
+}
+
+if (
+  anyNA(cohort_resp_mechanics_ccc$hospitalization_id) ||
+  anyDuplicated(cohort_resp_mechanics_ccc$hospitalization_id)
+) {
+  stop("CCC intermediate hospitalization IDs must be nonmissing and unique.")
+}
+
+ccc_values_valid <- vapply(
+  cohort_resp_mechanics_ccc[ccc_vars],
+  function(x) is.numeric(x) && all(is.na(x) | x %in% c(0L, 1L)),
+  logical(1)
+)
+
+if (!all(ccc_values_valid)) {
+  stop("CCC indicators must be numeric 0, 1, or NA: ", paste(ccc_vars[!ccc_values_valid], collapse = ", "))
+}
+
+if (!all(cohort_ids %in% cohort_resp_mechanics_ccc$hospitalization_id)) {
+  stop("At least one selected hospitalization is absent from the CCC intermediate.")
+}
+
+cohort_resp_mechanics_ccc <- cohort_resp_mechanics_ccc %>%
+  select(hospitalization_id, all_of(ccc_vars))
+
+rm(missing_ccc_columns, ccc_values_valid)
+
 required_post_intubation_columns <- c(
   ".resp_source_row_id", "intubation_event_id", "hospitalization_id", "intubation_dttm",
   "intubation_window_end_dttm", "recorded_dttm", "support_resolved",
@@ -602,6 +651,23 @@ pbw_pfvc_data <- pbw_pfvc_calculated %>%
     sex_category = factor(sex_category, levels = c("Male", "Female")),
     race_category = factor(race_category, levels = c("WHITE", "BLACK", "OTHER"))
   )
+
+# Attach hospitalization-level CCC without changing eligibility, row order, or missingness.
+ccc_link_index <- match(
+  pbw_pfvc_data$hospitalization_id,
+  cohort_resp_mechanics_ccc$hospitalization_id
+)
+
+if (anyNA(ccc_link_index)) {
+  stop("At least one retained PBW/PFVC hospitalization is absent from the CCC intermediate.")
+}
+
+pbw_pfvc_data <- bind_cols(
+  pbw_pfvc_data,
+  cohort_resp_mechanics_ccc[ccc_link_index, ccc_vars, drop = FALSE]
+)
+
+rm(ccc_link_index)
 
 if (any(!is.na(pbw_pfvc_data$pbw_nchs) & (!is.finite(pbw_pfvc_data$pbw_nchs) | pbw_pfvc_data$pbw_nchs <= 0))) {
   stop("At least one nonmissing NCHS predicted weight is nonfinite or nonpositive.")
@@ -1764,7 +1830,7 @@ analysis_data <- eligible_timepoints %>%
       select(
         hospitalization_id, age_at_admission, sex_category, race_category, sex_numeric, race_numeric,
         height_cm, height_source, height_gap_days, pbw, pbw_nchs, abw, abw_source,
-        abw_outside_expected_range, pfvc, deceased
+        abw_outside_expected_range, pfvc, deceased, all_of(ccc_vars)
       ),
     by = "hospitalization_id",
     relationship = "many-to-one"
@@ -3776,6 +3842,29 @@ script03_compact_qc <- list(
 script03_compact_qc$psofa_respiratory_derivation <- psofa_respiratory_derivation_qc
 
 script03_compact_qc$height_bin_coverage <- height_bin_coverage_qc
+
+script03_compact_qc$ccc_carry_through <- list(
+  source_file = ccc_input_path,
+  indicator_columns = ccc_vars,
+  eligibility_policy = "CCC availability does not change cohort or timepoint eligibility",
+  final_hospitalization_summary = purrr::map_dfr(ccc_vars, function(variable) {
+    values <- cross_sectional[[variable]]
+    
+    tibble(
+      variable = variable,
+      n_hospitalizations = length(values),
+      n_present = sum(values == 1L, na.rm = TRUE),
+      n_absent = sum(values == 0L, na.rm = TRUE),
+      n_missing = sum(is.na(values))
+    )
+  }),
+  output_columns = list(
+    broad_pfvc = intersect(ccc_vars, names(pbw_pfvc_data)),
+    all_eligible_timepoints = intersect(ccc_vars, names(analysis_with_completeness)),
+    all_timepoints = intersect(ccc_vars, names(analysis_all)),
+    cross_sectional = intersect(ccc_vars, names(cross_sectional))
+  )
+)
 
 cohort_diagnostics <- readRDS(diagnostic_rds_path)
 
